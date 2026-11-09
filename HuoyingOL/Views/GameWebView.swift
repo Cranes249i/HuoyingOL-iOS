@@ -28,6 +28,9 @@ struct GameWebView: UIViewRepresentable {
         let assetBridge = AirNativeFetchBridge()
         context.coordinator.assetBridge = assetBridge
         configuration.userContentController.add(assetBridge, name: AirNativeFetchBridge.handlerName)
+        let socketBridge = AirSocketBridge()
+        context.coordinator.socketBridge = socketBridge
+        configuration.userContentController.add(socketBridge, name: AirSocketBridge.handlerName)
         
         // 注入 qq-return.js 脚本 (在所有子frame中执行，用于处理跨iframe登录通信)
         injectQQReturnScript(into: configuration.userContentController)
@@ -38,6 +41,7 @@ struct GameWebView: UIViewRepresentable {
         // 创建独立的或者持久化的 WKWebView
         let webView = WKWebView(frame: .zero, configuration: configuration)
         assetBridge.webView = webView
+        socketBridge.webView = webView
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         
@@ -417,8 +421,158 @@ struct GameWebView: UIViewRepresentable {
             warnOnUnsupportedContent: false,
             openUrlMode: "allow",
             allowNetworking: "all",
-            upgradeToHttps: true
+            upgradeToHttps: true,
+            socketProxy: []
           });
+          window.__airSockets = {};
+          function queryValue(search, key) {
+            var q = String(search || "");
+            var mark = q.indexOf("?");
+            if (mark >= 0) q = q.slice(mark + 1);
+            var parts = q.split("&");
+            for (var i = 0; i < parts.length; i++) {
+              var eq = parts[i].indexOf("=");
+              var name = eq >= 0 ? decodeURIComponent(parts[i].slice(0, eq)) : parts[i];
+              if (name === key) return eq >= 0 ? decodeURIComponent(parts[i].slice(eq + 1)) : "";
+            }
+            return "";
+          }
+          function rememberSocket(host, port) {
+            host = String(host || "").replace(/^\s+|\s+$/g, "");
+            port = parseInt(port, 10);
+            if (!host || !(port > 0 && port < 65536)) return;
+            var key = host.toLowerCase() + ":" + port;
+            if (window.__airSockets[key]) return;
+            window.__airSockets[key] = true;
+            var proxy = "ws://air.socket/connect?host=" + encodeURIComponent(host) + "&port=" + String(port);
+            var list = window.RufflePlayer.config.socketProxy || [];
+            list.push({ host: host, port: port, proxyUrl: proxy });
+            window.RufflePlayer.config.socketProxy = list;
+            console.log("[air-ruffle] socketProxy " + host + ":" + port);
+            if (port !== 843) rememberSocket(host, 843);
+          }
+          function scanSocketText(text) {
+            if (!text || text.indexOf("port=") < 0) return;
+            var ip = queryValue(text, "ip") || queryValue(text, "host");
+            var port = queryValue(text, "port");
+            if (ip && port && ip.indexOf("://") < 0) rememberSocket(ip, port);
+          }
+          function scanSockets() {
+            scanSocketText(location.href);
+            var nodes = document.querySelectorAll("embed,object,param");
+            for (var i = 0; i < nodes.length; i++) {
+              var node = nodes[i];
+              scanSocketText(node.src || node.data || node.value || "");
+            }
+          }
+          rememberSocket("ied-tqosweb.qq.com", 8001);
+          scanSockets();
+          var socketObserver = new MutationObserver(scanSockets);
+          socketObserver.observe(document.documentElement || document, { childList: true, subtree: true, attributes: true, attributeFilter: ["src", "data", "value"] });
+          var OrigWebSocket = window.WebSocket;
+          function bytesToB64(bytes) {
+            var bin = "";
+            var step = 4096;
+            for (var i = 0; i < bytes.length; i += step) {
+              var slice = bytes.subarray(i, Math.min(i + step, bytes.length));
+              var tmp = new Array(slice.length);
+              for (var j = 0; j < slice.length; j++) tmp[j] = slice[j];
+              bin += String.fromCharCode.apply(null, tmp);
+            }
+            return btoa(bin);
+          }
+          function AirWebSocket(url, protocols) {
+            if (!(this instanceof AirWebSocket)) return new AirWebSocket(url, protocols);
+            var text = String(url || "");
+            if (text.indexOf("ws://air.socket/connect") !== 0) {
+              return protocols === undefined ? new OrigWebSocket(url) : new OrigWebSocket(url, protocols);
+            }
+            var self = this;
+            this.url = text;
+            this.readyState = 0;
+            this.bufferedAmount = 0;
+            this.extensions = "";
+            this.protocol = "";
+            this.binaryType = "arraybuffer";
+            this.onopen = null;
+            this.onmessage = null;
+            this.onerror = null;
+            this.onclose = null;
+            this._queue = [];
+            this._open = false;
+            this._id = "s" + (++window.__airFetchSeq);
+            window.__airSocketMap[this._id] = this;
+            var host = queryValue(text, "host");
+            var port = queryValue(text, "port");
+            var bridge = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.airNativeSocket;
+            if (!bridge) {
+              this.readyState = 3;
+              airStatus("socket 失败 无桥 " + host + ":" + port, false);
+              return;
+            }
+            bridge.postMessage({ op: "open", id: this._id, host: host, port: parseInt(port, 10) || 0 });
+            this.send = function (data) {
+              var bytes = null;
+              if (data instanceof ArrayBuffer) bytes = new Uint8Array(data);
+              else if (typeof ArrayBuffer !== "undefined" && ArrayBuffer.isView && ArrayBuffer.isView(data)) bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+              if (!bytes) return;
+              var b64 = bytesToB64(bytes);
+              if (!self._open) self._queue.push(b64);
+              else bridge.postMessage({ op: "send", id: self._id, b64: b64 });
+            };
+            this.close = function () {
+              self.readyState = 2;
+              bridge.postMessage({ op: "close", id: self._id });
+            };
+            this.addEventListener = function (type, fn) {
+              self["_on" + type] = self["_on" + type] || [];
+              self["_on" + type].push(fn);
+            };
+            this.removeEventListener = function () {};
+            this._emit = function (type, event) {
+              var fn = self["on" + type];
+              if (typeof fn === "function") fn.call(self, event);
+              var list = self["_on" + type] || [];
+              for (var n = 0; n < list.length; n++) list[n].call(self, event);
+            };
+            this._nativeOpen = function () {
+              self._open = true;
+              self.readyState = 1;
+              while (self._queue.length) bridge.postMessage({ op: "send", id: self._id, b64: self._queue.shift() });
+              airStatus("socket 已连接 " + host + ":" + port, true);
+              setTimeout(function () { self._emit("open", { type: "open", target: self }); }, 0);
+            };
+            this._nativeData = function (b64) {
+              var raw = bytesFromB64(b64);
+              var payload = self.binaryType === "blob" ? new Blob([raw]) : raw.buffer;
+              self._emit("message", { type: "message", data: payload, target: self });
+            };
+            this._nativeClose = function (kind) {
+              self._open = false;
+              self.readyState = 3;
+              delete window.__airSocketMap[self._id];
+              if (kind === "error") {
+                airStatus("socket 失败 " + host + ":" + port, false);
+                self._emit("error", { type: "error", target: self });
+              }
+              self._emit("close", { type: "close", target: self });
+            };
+          }
+          AirWebSocket.CONNECTING = 0;
+          AirWebSocket.OPEN = 1;
+          AirWebSocket.CLOSING = 2;
+          AirWebSocket.CLOSED = 3;
+          AirWebSocket.prototype = OrigWebSocket ? OrigWebSocket.prototype : {};
+          window.WebSocket = AirWebSocket;
+          window.__airSocketMap = {};
+          window.__airFetchSeq = window.__airFetchSeq || 0;
+          window.__airSocketEvent = function (id, type, b64) {
+            var sock = window.__airSocketMap[id];
+            if (!sock) return;
+            if (type === "open" && sock._nativeOpen) sock._nativeOpen();
+            else if (type === "data" && sock._nativeData) sock._nativeData(b64 || "");
+            else if (sock._nativeClose) sock._nativeClose(type);
+          };
           airStatus("正在解码 Ruffle wasm…", false);
           window.__airWasmReady = {};
           try {
@@ -464,14 +618,16 @@ struct GameWebView: UIViewRepresentable {
           function nativeAssetUrl(raw) {
             try {
               if (!raw) return null;
-              var abs = new URL(String(raw), location.href);
+              var abs = new URL(String(raw), document.baseURI || location.href);
               if (abs.protocol !== "http:" && abs.protocol !== "https:") return null;
-              if (abs.origin === location.origin) return null;
               var path = abs.pathname.toLowerCase();
               var host = abs.hostname.toLowerCase();
-              var swf = path.indexOf(".swf") >= 0;
-              var cdn = host === "res.huoying.qq.com" || host === "res.huoying.com";
-              if (!swf && !cdn) return null;
+              var asset = path.indexOf(".swf") >= 0 || path.indexOf(".pkg") >= 0 || path.indexOf(".cfg") >= 0 || path.indexOf("/flash/") >= 0 || path.indexOf("/assets/") >= 0 || path.indexOf("/config/") >= 0 || path.indexOf("narutobeta") >= 0;
+              if (!asset && host !== "res.huoying.qq.com" && host !== "res.huoying.com") return null;
+              if (host === location.hostname.toLowerCase() || host === "game.huoying.qq.com" || host === "huoying.qq.com") {
+                if (!asset) return null;
+                abs = new URL("https://res.huoying.qq.com" + abs.pathname + abs.search);
+              }
               return abs.href;
             } catch (e) {
               return null;
@@ -497,8 +653,13 @@ struct GameWebView: UIViewRepresentable {
             var slot = window.__airNativeSlots[id];
             if (!slot) return;
             delete window.__airNativeSlots[id];
+            var leafOf = function (url) {
+              var leaf = String(url || "").split("?")[0];
+              var slash = leaf.lastIndexOf("/");
+              return (slash >= 0 ? leaf.slice(slash + 1) : leaf) || leaf;
+            };
             if (error) {
-              if (String(slot.url).toLowerCase().indexOf(".swf") >= 0) airStatus("swf 失败 " + error, false);
+              airStatus("资源失败 " + leafOf(slot.url) + " " + error, false);
               slot.reject(new Error(error));
               return;
             }
@@ -524,7 +685,8 @@ struct GameWebView: UIViewRepresentable {
               }
             });
             console.log("[air-ruffle] native " + code + " " + bytes.byteLength + " " + slot.url);
-            if (type.indexOf("shockwave") >= 0) airStatus("swf 已载入 " + bytes.byteLength + " bytes", true);
+            window.__airAssetCount = (window.__airAssetCount || 0) + 1;
+            airStatus("资源 #" + window.__airAssetCount + " " + leafOf(slot.url) + " " + bytes.byteLength, code < 400);
             slot.resolve(response);
           };
           function nativeFetch(url) {
@@ -663,6 +825,7 @@ struct GameWebView: UIViewRepresentable {
     class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var viewModel: GameViewModel
         var assetBridge: AirNativeFetchBridge?
+        var socketBridge: AirSocketBridge?
         private var progressObservation: NSKeyValueObservation?
         private var titleObservation: NSKeyValueObservation?
         private var urlObservation: NSKeyValueObservation?

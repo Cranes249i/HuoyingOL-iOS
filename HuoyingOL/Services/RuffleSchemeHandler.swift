@@ -7,11 +7,12 @@
 //  本 handler 先留着，页面不再依赖它。
 //
 //  已知限制：火影 OL 的 entry.swf 是 ActionScript 3，并用 Flash Socket 连 zone.huoying.qq.com。
-//  Ruffle 0.7 不能直接做 TCP Socket，只能走 socketProxy（本仓库没有配套代理）。
-//  SWF 能下来之后，连区服端口时仍可能失败。
+//  Ruffle 只开 WebSocket。AirSocketBridge 把 ws://air.socket/connect 收成 TCP，主机限于火影/腾讯区服。
+//  加载进度来自 resource.cfg 和各版本目录里的 .pkg，不单是 entry.swf。
 //
 
 import Foundation
+import Network
 import WebKit
 
 final class RuffleSchemeHandler: NSObject, WKURLSchemeHandler {
@@ -266,7 +267,8 @@ final class AirNativeFetchBridge: NSObject, WKScriptMessageHandler {
         guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return false }
         guard let host = url.host?.lowercased(), !host.isEmpty, !isBlocked(host) else { return false }
         if host == "res.huoying.qq.com" || host == "res.huoying.com" { return true }
-        return url.path.lowercased().contains(".swf")
+        let path = url.path.lowercased()
+        return path.contains(".swf") || path.contains(".pkg") || path.contains(".cfg")
     }
 
     private static func isBlocked(_ host: String) -> Bool {
@@ -312,6 +314,164 @@ final class AirNativeFetchBridge: NSObject, WKScriptMessageHandler {
                 } else {
                     out += String(format: "\\u%04x", scalar.value)
                 }
+            default:
+                out.append(Character(scalar))
+            }
+        }
+        out += "\""
+        return out
+    }
+}
+
+/// Ruffle 的 Flash Socket 会改走 WebSocket。这里把 `ws://air.socket/connect` 收成到区服的 TCP。
+final class AirSocketBridge: NSObject, WKScriptMessageHandler {
+    static let handlerName = "airNativeSocket"
+
+    weak var webView: WKWebView?
+
+    private let lock = NSLock()
+    private var connections: [String: NWConnection] = [:]
+    private let queue = DispatchQueue(label: "air.socket")
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let body = message.body as? [String: Any] else { return }
+        let op = body["op"] as? String ?? ""
+        let id = body["id"] as? String ?? ""
+        guard id.range(of: "^[A-Za-z0-9]{1,32}$", options: .regularExpression) != nil else { return }
+        switch op {
+        case "open":
+            let host = body["host"] as? String ?? ""
+            let port = portValue(body["port"])
+            open(id: id, host: host, port: port)
+        case "send":
+            send(id: id, base64: body["b64"] as? String ?? "")
+        case "close":
+            close(id: id, notify: false)
+        default:
+            break
+        }
+    }
+
+    private func open(id: String, host: String, port: Int) {
+        guard Self.allows(host: host, port: port) else {
+            emit(id: id, type: "error", base64: nil)
+            return
+        }
+        guard let endpointPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
+            emit(id: id, type: "error", base64: nil)
+            return
+        }
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: endpointPort, using: .tcp)
+        lock.lock()
+        connections[id] = connection
+        lock.unlock()
+        connection.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
+            switch state {
+            case .ready:
+                self.emit(id: id, type: "open", base64: nil)
+                self.receive(id: id, connection: connection)
+            case .failed(_):
+                self.close(id: id, notify: true)
+            case .cancelled:
+                self.close(id: id, notify: true)
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+    }
+
+    private func receive(id: String, connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 32 * 1024) { [weak self] data, _, isComplete, error in
+            guard let self = self else { return }
+            if let data = data, !data.isEmpty {
+                self.emit(id: id, type: "data", base64: data.base64EncodedString())
+            }
+            if isComplete || error != nil {
+                self.close(id: id, notify: true)
+                return
+            }
+            self.receive(id: id, connection: connection)
+        }
+    }
+
+    private func send(id: String, base64: String) {
+        guard let data = Data(base64Encoded: base64), !data.isEmpty else { return }
+        lock.lock()
+        let connection = connections[id]
+        lock.unlock()
+        connection?.send(content: data, completion: .contentProcessed { [weak self] error in
+            if error != nil {
+                self?.close(id: id, notify: true)
+            }
+        })
+    }
+
+    private func close(id: String, notify: Bool) {
+        lock.lock()
+        let connection = connections.removeValue(forKey: id)
+        lock.unlock()
+        guard let connection = connection else { return }
+        connection.stateUpdateHandler = nil
+        connection.cancel()
+        if notify {
+            emit(id: id, type: "close", base64: nil)
+        }
+    }
+
+    private func emit(id: String, type: String, base64: String?) {
+        let payload = base64.map(Self.jsString) ?? "null"
+        let script = "window.__airSocketEvent&&window.__airSocketEvent(\(Self.jsString(id)),\(Self.jsString(type)),\(payload))"
+        DispatchQueue.main.async { [weak self] in
+            self?.webView?.evaluateJavaScript(script, completionHandler: nil)
+        }
+    }
+
+    private func portValue(_ value: Any?) -> Int {
+        if let number = value as? NSNumber { return number.intValue }
+        if let text = value as? String, let port = Int(text) { return port }
+        return 0
+    }
+
+    private static func allows(host: String, port: Int) -> Bool {
+        guard port > 0, port < 65536 else { return false }
+        let name = host.lowercased()
+        if name.isEmpty || isBlocked(name) { return false }
+        if name == "ied-tqosweb.qq.com" || name.hasSuffix(".huoying.qq.com") || name.hasSuffix(".huoying.com") {
+            return true
+        }
+        let parts = name.split(separator: ".")
+        if parts.count == 4, parts.allSatisfy({ Int($0) != nil }) {
+            return true
+        }
+        return false
+    }
+
+    private static func isBlocked(_ host: String) -> Bool {
+        if host == "localhost" || host.hasSuffix(".local") || host == "0.0.0.0" || host == "::1" { return true }
+        if host.hasPrefix("127.") || host.hasPrefix("10.") || host.hasPrefix("192.168.") || host.hasPrefix("169.254.") { return true }
+        if host.hasPrefix("172.") {
+            let parts = host.split(separator: ".")
+            if parts.count > 1, let second = Int(parts[1]), (16...31).contains(second) { return true }
+        }
+        return false
+    }
+
+    private static func jsString(_ value: String) -> String {
+        var out = "\""
+        for scalar in value.unicodeScalars {
+            switch scalar.value {
+            case 0x5C:
+                out += "\\\\"
+            case 0x22:
+                out += "\\\""
+            case 0x0A:
+                out += "\\n"
+            case 0x0D:
+                out += "\\r"
+            case 0..<0x20:
+                out += String(format: "\\u%04x", scalar.value)
             default:
                 out.append(Character(scalar))
             }
