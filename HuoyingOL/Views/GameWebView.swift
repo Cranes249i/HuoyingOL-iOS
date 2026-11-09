@@ -436,6 +436,14 @@ struct GameWebView: UIViewRepresentable {
             console.error("[air-ruffle]", error);
           }
           var ready = window.__airWasmReady;
+          function requestUrl(input) {
+            if (typeof input === "string") return input;
+            if (typeof URL === "function" && input instanceof URL) return input.href;
+            if (typeof Request === "function" && input instanceof Request) return input.url;
+            if (input && input.href) return input.href;
+            if (input && input.url) return input.url;
+            return "";
+          }
           function wasmNameOf(raw) {
             var text = String(raw || "");
             var query = text.indexOf("?");
@@ -450,6 +458,8 @@ struct GameWebView: UIViewRepresentable {
           function wasmResponse(name) {
             var bytes = ready[name];
             if (!bytes) return Promise.reject(new Error("wasm not ready " + name));
+            window.__airWasmServed = (window.__airWasmServed || 0) + 1;
+            airStatus("wasm 已交给 Ruffle " + name + " #" + window.__airWasmServed, true);
             return Promise.resolve(new Response(bytes.slice(0), {
               status: 200,
               statusText: "OK",
@@ -483,7 +493,7 @@ struct GameWebView: UIViewRepresentable {
           }
           var origFetch = window.fetch.bind(window);
           window.fetch = function (input, init) {
-            var raw = typeof input === "string" ? input : (input && input.url) || "";
+            var raw = requestUrl(input);
             var wasmName = wasmNameOf(raw);
             if (wasmName) return wasmResponse(wasmName);
             var next = shouldProxy(raw);
