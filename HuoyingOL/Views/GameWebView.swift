@@ -46,8 +46,9 @@ struct GameWebView: UIViewRepresentable {
         webView.backgroundColor = .black
         webView.scrollView.backgroundColor = .black
         
-        // 保留 iPhone 标识。官网据此下发 ptlogin style=35，里面才有一键登录用的 pt.doOneKey / wtloginmqq。
-        let defaultUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+        // 桌面 Safari UA。iPhone 字样会让授权页走 style=35，一键登录跳出到 QQ，
+        // 再打开缺少 s_url 的 qccallback。桌面页的账号密码和扫码都留在这个 WebView 里。
+        let defaultUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15"
         webView.customUserAgent = "\(defaultUA) \(AppSettings.customUserAgent)"
         
         // 绑定引用到 ViewModel
@@ -80,8 +81,8 @@ struct GameWebView: UIViewRepresentable {
         } else {
             // 与 Resources/qq-return.js 保持一致，Bundle 缺失时仍能登录
             scriptSource = #"""
-// QQ 登录桥：把官网 iframe 登录和原生壳接上。
-// 密码登录要露出 style=35 里被隐藏的账号密码框；快捷登录调用 pt.doOneKey() 拉起手机 QQ。
+// QQ 登录桥。登录必须留在 WKWebView 里完成。
+// 拉起手机 QQ 会让回调打开到系统浏览器，qccallback 缺少 s_url，登录态回不来。
 (() => {
  const home="https://huoying.qq.com", graph="https://graph.qq.com";
  const login=["https://xui.ptlogin2.qq.com","https://ssl.ptlogin2.qq.com"];
@@ -144,14 +145,6 @@ struct GameWebView: UIViewRepresentable {
    activeMode=kind;
    clearInterval(modeTimer);
    fitLoginFrame();
-   for(const frame of document.querySelectorAll("iframe")){
-    let u;try{u=new URL(frame.src,location.href);}catch{continue;}
-    if(u.origin===graph&&["/oauth2.0/authorize","/oauth2.0/show"].includes(u.pathname)){
-     u.pathname="/oauth2.0/authorize";
-     if(kind==="qq")u.searchParams.set("display","mobile");
-     frame.dataset.airQqMode=kind;frame.src=u.href;
-    }
-   }
    const attempt=String(Date.now()),started=Date.now(),deadline=started+60000;
    let opened=false,lastOpen=0;
    modeTimer=setInterval(()=>{
@@ -166,12 +159,6 @@ struct GameWebView: UIViewRepresentable {
      if(btn)btn.click();
      else if(window.LoginManager&&typeof window.LoginManager.login==="function"){try{window.LoginManager.login();}catch(e){}}
     }
-    if(kind==="qq")for(const frame of document.querySelectorAll("iframe")){
-     let u;try{u=new URL(frame.src,location.href);}catch{continue;}
-     if(u.origin===graph&&["/oauth2.0/authorize","/oauth2.0/show"].includes(u.pathname)&&frame.dataset.airQqMode!=="qq"){
-      frame.dataset.airQqMode="qq";u.pathname="/oauth2.0/authorize";u.searchParams.set("display","mobile");frame.src=u.href;
-     }
-    }
     send({type,action:kind,attempt});
    },250);
   }};
@@ -180,7 +167,7 @@ struct GameWebView: UIViewRepresentable {
    const fromFrame=[...document.querySelectorAll("iframe")].some(f=>f.contentWindow===e.source);
    if(!fromFrame)return;
    if(e.data.action==="accepted"&&(e.origin===graph||login.includes(e.origin)))window.airQqReturn.accepted=true;
-   if(e.data.action==="mode-ready"&&(e.origin===graph||login.includes(e.origin)))clearInterval(modeTimer);
+   if(e.data.action==="mode-ready"&&(e.origin===graph||login.includes(e.origin))&&activeMode==="qq")clearInterval(modeTimer);
   });return;
  }
  if(origin!==graph&&!login.includes(origin))return;
@@ -191,7 +178,18 @@ struct GameWebView: UIViewRepresentable {
    return /ptlogin2\.qq\.com$/.test(u.hostname)&&u.pathname==="/jump"&&!u.username&&!u.password&&!u.hash;
   }catch(e){return false;}
  }
+ function blockOneKey(){
+  try{
+   if(window.pt&&typeof window.pt.doOneKey==="function"&&!window.pt.doOneKey.airBlocked){
+    window.pt.doOneKey=function(){};
+    window.pt.doOneKey.airBlocked=true;
+   }
+  }catch(e){}
+  const onekey=document.getElementById("onekey");
+  if(onekey)onekey.style.display="none";
+ }
  function revealPassword(){
+  blockOneKey();
   const p=document.getElementById("p"),u=document.getElementById("u");
   const already=!!(p&&p.getBoundingClientRect().height>0);
   if(!already){
@@ -200,7 +198,6 @@ struct GameWebView: UIViewRepresentable {
    if(sw)sw.click();
    const qrSwitch=document.getElementById("qrlogin_switch");
    if(qrSwitch&&!sw)qrSwitch.click();
-   try{if(typeof window.pt?.hideOneKey==="function")window.pt.hideOneKey();}catch(e){}
   }
   const qr=document.getElementById("qrlogin");
   if(qr)qr.style.display="none";
@@ -210,20 +207,18 @@ struct GameWebView: UIViewRepresentable {
   if(form)form.style.display="block";
   const go=document.getElementById("go");
   if(go)go.style.display="block";
-  const onekey=document.getElementById("onekey");
-  if(onekey)onekey.style.display="none";
-  const visible=!!(p&&p.getBoundingClientRect().height>0);
-  if(!already&&visible&&u&&document.activeElement!==u&&document.activeElement!==p){try{u.focus();}catch(e){}}
+  const visible=!!(p&&p.getBoundingClientRect().height>0)||!!document.getElementById("switcher_plogin");
+  if(!already&&p&&p.getBoundingClientRect().height>0&&u&&document.activeElement!==u&&document.activeElement!==p){try{u.focus();}catch(e){}}
   return visible;
  }
- function launchQQ(){
-  if(window.pt&&window.pt.hasInit&&typeof window.pt.doOneKey==="function"){
-   window.pt.doOneKey();
-   return true;
-  }
-  const btn=document.getElementById("onekey");
-  if(btn){btn.click();return true;}
-  return false;
+ function showQR(){
+  blockOneKey();
+  const toQr=document.getElementById("switcher_qlogin");
+  if(toQr)toQr.click();
+  try{if(typeof window.pt?.switchqr==="function")window.pt.switchqr();}catch(e){}
+  const qr=document.getElementById("web_qr_login")||document.getElementById("qrlogin");
+  if(qr)qr.style.display="block";
+  return !!(document.getElementById("qrlogin_img")||document.getElementById("qrimg")||qr);
  }
  addEventListener("message",e=>{
   const d=e.data;if(d?.type!==type)return;
@@ -234,14 +229,17 @@ struct GameWebView: UIViewRepresentable {
   if(e.source!==window.parent)return;
   if(origin===graph){
    if(e.origin!==home)return;
+   blockOneKey();
    for(const f of document.querySelectorAll("iframe"))for(const target of login)f.contentWindow.postMessage(d,target);
   }else if((e.origin===home||e.origin===graph)&&d.action==="return"&&typeof d.url==="string"){
    if(!isJump(d.url))return;
    window.parent.postMessage({type,action:"accepted"},e.origin);location.replace(d.url);
   }else if((e.origin===home||e.origin===graph)&&typeof d.attempt==="string"){
+   blockOneKey();
    if(d.action==="password"){revealPassword();return;}
-   if(issued===d.attempt)return;
-   if(d.action!=="qq"||!launchQQ())return;
+   if(d.action!=="qq")return;
+   const ready=showQR();
+   if(!ready||issued===d.attempt)return;
    issued=d.attempt;
    window.parent.postMessage({type,action:"mode-ready"},e.origin);
   }
@@ -398,24 +396,14 @@ struct GameWebView: UIViewRepresentable {
                 return
             }
 
-            // 一键登录会把顶层或隐藏 iframe 导航到 wtloginmqq:// 等 scheme。
-            // canOpenURL 在 scheme 未声明时恒为 false，不能拿它当开关，否则 QQ 永远不会被打开。
+            // wtloginmqq:// 会把登录交出去。QQ 完成后用系统浏览器打开 huoying.qq.com，
+            // 那个页面没有 s_url，登录态也回不到 WebView。这里直接取消，让账号密码和扫码留在页内。
             if QQLoginService.shouldOpenExternally(url) {
-                openQQApp(QQLoginService.urlForQQApp(url))
                 decisionHandler(.cancel)
                 return
             }
             
             decisionHandler(.allow)
-        }
-
-        private func openQQApp(_ url: URL) {
-            UIApplication.shared.open(url, options: [:]) { [weak self] success in
-                guard let self = self, !success else { return }
-                DispatchQueue.main.async {
-                    self.viewModel.errorMessage = "未能打开手机 QQ。请确认已安装 QQ 后，再点一次「QQ快捷登录」。"
-                }
-            }
         }
         
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -436,7 +424,6 @@ struct GameWebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             let nsError = error as NSError
             if let failed = nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL, QQLoginService.shouldOpenExternally(failed) {
-                openQQApp(QQLoginService.urlForQQApp(failed))
                 viewModel.updateLoadingState(false)
                 return
             }
@@ -463,7 +450,6 @@ struct GameWebView: UIViewRepresentable {
                 return nil
             }
             if QQLoginService.shouldOpenExternally(url) {
-                openQQApp(QQLoginService.urlForQQApp(url))
                 return nil
             }
             // 只把真正的网页弹窗留在当前 WebView。about:blank 会把选区页替换掉。

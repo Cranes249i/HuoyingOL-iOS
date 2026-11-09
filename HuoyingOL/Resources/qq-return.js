@@ -1,5 +1,5 @@
-// QQ 登录桥：把官网 iframe 登录和原生壳接上。
-// 密码登录要露出 style=35 里被隐藏的账号密码框；快捷登录调用 pt.doOneKey() 拉起手机 QQ。
+// QQ 登录桥。登录必须留在 WKWebView 里完成。
+// 拉起手机 QQ 会让回调打开到系统浏览器，qccallback 缺少 s_url，登录态回不来。
 (() => {
  const home="https://huoying.qq.com", graph="https://graph.qq.com";
  const login=["https://xui.ptlogin2.qq.com","https://ssl.ptlogin2.qq.com"];
@@ -62,14 +62,6 @@
    activeMode=kind;
    clearInterval(modeTimer);
    fitLoginFrame();
-   for(const frame of document.querySelectorAll("iframe")){
-    let u;try{u=new URL(frame.src,location.href);}catch{continue;}
-    if(u.origin===graph&&["/oauth2.0/authorize","/oauth2.0/show"].includes(u.pathname)){
-     u.pathname="/oauth2.0/authorize";
-     if(kind==="qq")u.searchParams.set("display","mobile");
-     frame.dataset.airQqMode=kind;frame.src=u.href;
-    }
-   }
    const attempt=String(Date.now()),started=Date.now(),deadline=started+60000;
    let opened=false,lastOpen=0;
    modeTimer=setInterval(()=>{
@@ -84,12 +76,6 @@
      if(btn)btn.click();
      else if(window.LoginManager&&typeof window.LoginManager.login==="function"){try{window.LoginManager.login();}catch(e){}}
     }
-    if(kind==="qq")for(const frame of document.querySelectorAll("iframe")){
-     let u;try{u=new URL(frame.src,location.href);}catch{continue;}
-     if(u.origin===graph&&["/oauth2.0/authorize","/oauth2.0/show"].includes(u.pathname)&&frame.dataset.airQqMode!=="qq"){
-      frame.dataset.airQqMode="qq";u.pathname="/oauth2.0/authorize";u.searchParams.set("display","mobile");frame.src=u.href;
-     }
-    }
     send({type,action:kind,attempt});
    },250);
   }};
@@ -98,7 +84,7 @@
    const fromFrame=[...document.querySelectorAll("iframe")].some(f=>f.contentWindow===e.source);
    if(!fromFrame)return;
    if(e.data.action==="accepted"&&(e.origin===graph||login.includes(e.origin)))window.airQqReturn.accepted=true;
-   if(e.data.action==="mode-ready"&&(e.origin===graph||login.includes(e.origin)))clearInterval(modeTimer);
+   if(e.data.action==="mode-ready"&&(e.origin===graph||login.includes(e.origin))&&activeMode==="qq")clearInterval(modeTimer);
   });return;
  }
  if(origin!==graph&&!login.includes(origin))return;
@@ -109,7 +95,18 @@
    return /ptlogin2\.qq\.com$/.test(u.hostname)&&u.pathname==="/jump"&&!u.username&&!u.password&&!u.hash;
   }catch(e){return false;}
  }
+ function blockOneKey(){
+  try{
+   if(window.pt&&typeof window.pt.doOneKey==="function"&&!window.pt.doOneKey.airBlocked){
+    window.pt.doOneKey=function(){};
+    window.pt.doOneKey.airBlocked=true;
+   }
+  }catch(e){}
+  const onekey=document.getElementById("onekey");
+  if(onekey)onekey.style.display="none";
+ }
  function revealPassword(){
+  blockOneKey();
   const p=document.getElementById("p"),u=document.getElementById("u");
   const already=!!(p&&p.getBoundingClientRect().height>0);
   if(!already){
@@ -118,7 +115,6 @@
    if(sw)sw.click();
    const qrSwitch=document.getElementById("qrlogin_switch");
    if(qrSwitch&&!sw)qrSwitch.click();
-   try{if(typeof window.pt?.hideOneKey==="function")window.pt.hideOneKey();}catch(e){}
   }
   const qr=document.getElementById("qrlogin");
   if(qr)qr.style.display="none";
@@ -128,20 +124,18 @@
   if(form)form.style.display="block";
   const go=document.getElementById("go");
   if(go)go.style.display="block";
-  const onekey=document.getElementById("onekey");
-  if(onekey)onekey.style.display="none";
-  const visible=!!(p&&p.getBoundingClientRect().height>0);
-  if(!already&&visible&&u&&document.activeElement!==u&&document.activeElement!==p){try{u.focus();}catch(e){}}
+  const visible=!!(p&&p.getBoundingClientRect().height>0)||!!document.getElementById("switcher_plogin");
+  if(!already&&p&&p.getBoundingClientRect().height>0&&u&&document.activeElement!==u&&document.activeElement!==p){try{u.focus();}catch(e){}}
   return visible;
  }
- function launchQQ(){
-  if(window.pt&&window.pt.hasInit&&typeof window.pt.doOneKey==="function"){
-   window.pt.doOneKey();
-   return true;
-  }
-  const btn=document.getElementById("onekey");
-  if(btn){btn.click();return true;}
-  return false;
+ function showQR(){
+  blockOneKey();
+  const toQr=document.getElementById("switcher_qlogin");
+  if(toQr)toQr.click();
+  try{if(typeof window.pt?.switchqr==="function")window.pt.switchqr();}catch(e){}
+  const qr=document.getElementById("web_qr_login")||document.getElementById("qrlogin");
+  if(qr)qr.style.display="block";
+  return !!(document.getElementById("qrlogin_img")||document.getElementById("qrimg")||qr);
  }
  addEventListener("message",e=>{
   const d=e.data;if(d?.type!==type)return;
@@ -152,14 +146,17 @@
   if(e.source!==window.parent)return;
   if(origin===graph){
    if(e.origin!==home)return;
+   blockOneKey();
    for(const f of document.querySelectorAll("iframe"))for(const target of login)f.contentWindow.postMessage(d,target);
   }else if((e.origin===home||e.origin===graph)&&d.action==="return"&&typeof d.url==="string"){
    if(!isJump(d.url))return;
    window.parent.postMessage({type,action:"accepted"},e.origin);location.replace(d.url);
   }else if((e.origin===home||e.origin===graph)&&typeof d.attempt==="string"){
+   blockOneKey();
    if(d.action==="password"){revealPassword();return;}
-   if(issued===d.attempt)return;
-   if(d.action!=="qq"||!launchQQ())return;
+   if(d.action!=="qq")return;
+   const ready=showQR();
+   if(!ready||issued===d.attempt)return;
    issued=d.attempt;
    window.parent.postMessage({type,action:"mode-ready"},e.origin);
   }

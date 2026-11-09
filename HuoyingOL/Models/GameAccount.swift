@@ -46,13 +46,13 @@ struct GameAccount: Identifiable, Codable, Equatable {
     
     /// 登录模式枚举
     enum LoginMode: String, Codable, CaseIterable {
-        case password = "password"  // 密码登录
-        case qq = "qq"              // QQ快捷登录（需要安装QQ）
+        case password = "password"  // 页内账号密码登录
+        case qq = "qq"              // 页内 QQ 扫码，不跳出到手机 QQ
         
         var displayName: String {
             switch self {
             case .password: return "密码登录"
-            case .qq: return "QQ快捷登录"
+            case .qq: return "扫码登录"
             }
         }
     }
