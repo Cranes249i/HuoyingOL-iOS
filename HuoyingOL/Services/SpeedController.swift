@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import WebKit
 
 /// 速度控制器
 /// 生成JavaScript代码来覆写浏览器时间API，实现游戏速度倍率控制
