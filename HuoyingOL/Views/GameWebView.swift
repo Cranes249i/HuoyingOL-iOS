@@ -351,13 +351,56 @@ struct GameWebView: UIViewRepresentable {
         contentController.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
     }
 
-    /// 在页面脚本之前放好 Ruffle：配置 publicPath，并把没有 CORS 的 SWF 请求改到 ruffle://proxy。
+    /// 在 Ruffle 启动前把包内 wasm 写进页面内存。不能走 ruffle://：真机上 fetch 和 script src 都到不了自定义 scheme。
     private func injectRuffleScript(into contentController: WKUserContentController) {
-        let bootstrap = #"""
+        let wasmNames = [
+            "878d548199cddef07035.wasm",
+            "172de42e6619eac8f371.wasm"
+        ]
+        for name in wasmNames {
+            guard let file = Self.ruffleResource(name),
+                  let data = try? Data(contentsOf: file),
+                  !data.isEmpty else {
+                let missing = "console.error('[air-ruffle] missing \(name)');"
+                contentController.addUserScript(WKUserScript(source: missing, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+                continue
+            }
+            let encoded = data.base64EncodedString()
+            let chunkSize = 200_000
+            var cursor = encoded.startIndex
+            while cursor < encoded.endIndex {
+                let next = encoded.index(cursor, offsetBy: chunkSize, limitedBy: encoded.endIndex) ?? encoded.endIndex
+                let chunk = String(encoded[cursor..<next])
+                let source = "window.__airWasmB64=window.__airWasmB64||{};window.__airWasmB64[\"\(name)\"]=(window.__airWasmB64[\"\(name)\"]||\"\")+\"\(chunk)\";"
+                contentController.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+                cursor = next
+            }
+        }
+
+        let runtime = #"""
         (() => {
+          var wasmNames = ["878d548199cddef07035.wasm", "172de42e6619eac8f371.wasm"];
+          function airStatus(text, ok) {
+            console.log("[air-ruffle] " + text);
+            function paint() {
+              var parent = document.body || document.documentElement;
+              if (!parent) return;
+              var el = document.getElementById("air-ruffle-status");
+              if (!el) {
+                el = document.createElement("div");
+                el.id = "air-ruffle-status";
+                el.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:2147483647;padding:4px 8px;font:12px/1.4 -apple-system,sans-serif;color:#fff;border-radius:6px;pointer-events:none;max-width:92vw;";
+                parent.appendChild(el);
+              }
+              el.style.background = ok ? "rgba(10,122,50,.92)" : "rgba(160,40,40,.92)";
+              el.textContent = text;
+            }
+            paint();
+            document.addEventListener("DOMContentLoaded", paint);
+          }
           window.RufflePlayer = window.RufflePlayer || {};
           window.RufflePlayer.config = Object.assign({}, window.RufflePlayer.config, {
-            publicPath: "ruffle://bundle/",
+            publicPath: "https://game.huoying.qq.com/ruffle-local/",
             polyfills: true,
             autoplay: "on",
             unmuteOverlay: "hidden",
@@ -372,22 +415,27 @@ struct GameWebView: UIViewRepresentable {
             allowNetworking: "all",
             upgradeToHttps: true
           });
-          if (location.hostname !== "game.huoying.qq.com") return;
-          var wasmNames = ["878d548199cddef07035.wasm", "172de42e6619eac8f371.wasm"];
-          var wasmReady = {};
-          var wasmWaiters = {};
-          function notifyWasm(name, bytes) {
-            wasmReady[name] = bytes;
-            var list = wasmWaiters[name] || [];
-            wasmWaiters[name] = [];
-            list.forEach(function (fn) { fn(bytes); });
-          }
-          function waitWasm(name) {
-            if (wasmReady[name]) return Promise.resolve(wasmReady[name]);
-            return new Promise(function (resolve) {
-              (wasmWaiters[name] = wasmWaiters[name] || []).push(resolve);
+          airStatus("正在解码 Ruffle wasm…", false);
+          window.__airWasmReady = {};
+          try {
+            wasmNames.forEach(function (name) {
+              var b64 = window.__airWasmB64 && window.__airWasmB64[name];
+              if (!b64) throw new Error("missing " + name);
+              var bin = atob(b64);
+              var bytes = new Uint8Array(bin.length);
+              var step = 32768;
+              for (var i = 0; i < bin.length; i += step) {
+                var end = Math.min(i + step, bin.length);
+                for (var j = i; j < end; j++) bytes[j] = bin.charCodeAt(j);
+              }
+              window.__airWasmReady[name] = bytes;
+              delete window.__airWasmB64[name];
             });
+          } catch (error) {
+            airStatus("wasm 失败 " + (error && error.message ? error.message : error), false);
+            console.error("[air-ruffle]", error);
           }
+          var ready = window.__airWasmReady;
           function wasmNameOf(raw) {
             var text = String(raw || "");
             var query = text.indexOf("?");
@@ -399,42 +447,14 @@ struct GameWebView: UIViewRepresentable {
             }
             return null;
           }
-          function decodeB64(b64) {
-            var bin = atob(b64);
-            var bytes = new Uint8Array(bin.length);
-            var step = 32768;
-            for (var i = 0; i < bin.length; i += step) {
-              var end = Math.min(i + step, bin.length);
-              for (var j = i; j < end; j++) bytes[j] = bin.charCodeAt(j);
-            }
-            return bytes;
-          }
-          function loadScript(src) {
-            return new Promise(function (resolve, reject) {
-              var script = document.createElement("script");
-              script.src = src;
-              script.onload = function () { resolve(); };
-              script.onerror = function () { reject(new Error(src)); };
-              (document.head || document.documentElement).appendChild(script);
-            });
-          }
-          function loadWasm(name) {
-            return loadScript("ruffle://bundle/wasm/" + name + "/manifest.js").then(function () {
-              var count = window.__airWasmCount[name];
-              var chain = Promise.resolve();
-              for (var i = 0; i < count; i++) {
-                (function (index) {
-                  chain = chain.then(function () {
-                    return loadScript("ruffle://bundle/wasm/" + name + "/" + index + ".js");
-                  });
-                })(i);
-              }
-              return chain.then(function () {
-                var b64 = window.__airWasmParts[name];
-                delete window.__airWasmParts[name];
-                notifyWasm(name, decodeB64(b64));
-              });
-            });
+          function wasmResponse(name) {
+            var bytes = ready[name];
+            if (!bytes) return Promise.reject(new Error("wasm not ready " + name));
+            return Promise.resolve(new Response(bytes.slice(0), {
+              status: 200,
+              statusText: "OK",
+              headers: { "Content-Type": "application/wasm" }
+            }));
           }
           if (window.WebAssembly && WebAssembly.instantiateStreaming) {
             var origStreaming = WebAssembly.instantiateStreaming.bind(WebAssembly);
@@ -448,12 +468,14 @@ struct GameWebView: UIViewRepresentable {
               });
             };
           }
-          function proxied(raw) {
+          function shouldProxy(raw) {
             try {
               var abs = new URL(String(raw), location.href);
-              if (abs.protocol === "ruffle:") return null;
               if (abs.protocol !== "http:" && abs.protocol !== "https:") return null;
               if (abs.origin === location.origin) return null;
+              var path = abs.pathname;
+              var host = abs.hostname;
+              if (path.indexOf(".swf") < 0 && host !== "res.huoying.qq.com" && host !== "res.huoying.com") return null;
               return "ruffle://proxy/?url=" + encodeURIComponent(abs.href);
             } catch (e) {
               return null;
@@ -463,46 +485,51 @@ struct GameWebView: UIViewRepresentable {
           window.fetch = function (input, init) {
             var raw = typeof input === "string" ? input : (input && input.url) || "";
             var wasmName = wasmNameOf(raw);
-            if (wasmName) {
-              return waitWasm(wasmName).then(function (bytes) {
-                return new Response(bytes.slice(0), {
-                  status: 200,
-                  statusText: "OK",
-                  headers: { "Content-Type": "application/wasm" }
-                });
-              });
-            }
-            var next = proxied(raw);
+            if (wasmName) return wasmResponse(wasmName);
+            var next = shouldProxy(raw);
             if (!next) return origFetch(input, init);
             return origFetch(next, init);
           };
           var origOpen = XMLHttpRequest.prototype.open;
           XMLHttpRequest.prototype.open = function (method, url) {
             var args = Array.prototype.slice.call(arguments);
-            var next = proxied(url);
+            var next = shouldProxy(url);
             if (next) args[1] = next;
             return origOpen.apply(this, args);
           };
-          wasmNames.forEach(function (name) {
-            loadWasm(name).catch(function (error) { console.error("ruffle wasm", error); });
-          });
-          setTimeout(function () {
-            if (window.RufflePlayer && typeof window.RufflePlayer.newest === "function") return;
-            loadScript("ruffle://bundle/ruffle.js").catch(function (error) { console.error(error); });
-          }, 0);
+          if (ready["878d548199cddef07035.wasm"] && ready["172de42e6619eac8f371.wasm"]) {
+            airStatus("wasm 已就绪 " + ready["878d548199cddef07035.wasm"].length + " + " + ready["172de42e6619eac8f371.wasm"].length + " bytes", true);
+          }
         })();
         """#
-        contentController.addUserScript(WKUserScript(source: bootstrap, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        contentController.addUserScript(WKUserScript(source: runtime, injectionTime: .atDocumentStart, forMainFrameOnly: true))
 
-        // 直接注入 ruffle.js，保证在 narutoweb.js 创建 object/embed 之前完成 polyfill。
-        // 动态 script 只在注入失败时由上面的 setTimeout 补上。
-        let ruffleFile = Bundle.main.url(forResource: "ruffle", withExtension: "js", subdirectory: "Ruffle")
-            ?? Bundle.main.url(forResource: "ruffle", withExtension: "js")
-        if let ruffleFile = ruffleFile, let source = try? String(contentsOf: ruffleFile, encoding: .utf8), !source.isEmpty {
+        for coreName in ["core.ruffle.16d61072ac7fdc4d5013.js", "core.ruffle.994eeef0a471a88cd0e3.js"] {
+            if let file = Self.ruffleResource(coreName),
+               let source = try? String(contentsOf: file, encoding: .utf8),
+               !source.isEmpty {
+                contentController.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            }
+        }
+
+        if let ruffleFile = Self.ruffleResource("ruffle.js"),
+           let source = try? String(contentsOf: ruffleFile, encoding: .utf8),
+           !source.isEmpty {
             contentController.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
     }
-    
+
+    private static func ruffleResource(_ name: String) -> URL? {
+        if let root = Bundle.main.resourceURL?.appendingPathComponent("Ruffle", isDirectory: true) {
+            let file = root.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: file.path) {
+                return file
+            }
+        }
+        return Bundle.main.url(forResource: name, withExtension: nil, subdirectory: "Ruffle")
+            ?? Bundle.main.url(forResource: name, withExtension: nil)
+    }
+
     // MARK: - Coordinator
     
     class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {

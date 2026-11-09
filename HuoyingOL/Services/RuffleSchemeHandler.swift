@@ -37,9 +37,6 @@ final class RuffleSchemeHandler: NSObject, WKURLSchemeHandler {
         }
         switch url.host?.lowercased() {
         case "bundle":
-            if serveWasmAsScript(url, task: urlSchemeTask) {
-                return
-            }
             serveBundle(url, task: urlSchemeTask)
         case "proxy":
             serveProxy(url, webView: webView, task: urlSchemeTask)
@@ -52,55 +49,6 @@ final class RuffleSchemeHandler: NSObject, WKURLSchemeHandler {
         lock.lock()
         stoppedTasks.insert(ObjectIdentifier(urlSchemeTask))
         lock.unlock()
-    }
-
-    /// WKWebView 的 fetch() 往往到不了自定义 scheme，instantiateStreaming 也会拒绝这种响应。
-    /// 把 wasm 切成 base64 脚本，用 script 标签加载（scheme 对 script src 有效），再由页面拼成带 application/wasm 的 Response。
-    private static let wasmChunkChars = 524288
-
-    private func serveWasmAsScript(_ url: URL, task: WKURLSchemeTask) -> Bool {
-        let pieces = url.path.split(separator: "/").map(String.init)
-        guard pieces.count == 3, pieces[0] == "wasm" else { return false }
-        let name = pieces[1]
-        let part = pieces[2]
-        guard Self.isSafeWasmName(name), let file = Self.bundleFile(named: name) else {
-            fail(task, URLError(.fileDoesNotExist))
-            return true
-        }
-        do {
-            let base64 = try Data(contentsOf: file).base64EncodedString()
-            let javascript: String
-            if part == "manifest.js" {
-                let count = max(1, (base64.count + Self.wasmChunkChars - 1) / Self.wasmChunkChars)
-                javascript = "window.__airWasmCount=window.__airWasmCount||{};window.__airWasmCount[\""
-                    + name + "\"]=" + String(count)
-                    + ";window.__airWasmParts=window.__airWasmParts||{};window.__airWasmParts[\""
-                    + name + "\"]=\"\";"
-            } else if part.hasSuffix(".js"), let index = Int(part.dropLast(3)), index >= 0 {
-                let start = index * Self.wasmChunkChars
-                guard start < base64.count else {
-                    fail(task, URLError(.fileDoesNotExist))
-                    return true
-                }
-                let end = min(start + Self.wasmChunkChars, base64.count)
-                let from = base64.index(base64.startIndex, offsetBy: start)
-                let to = base64.index(base64.startIndex, offsetBy: end)
-                javascript = "window.__airWasmParts[\"" + name + "\"]+=\"" + String(base64[from..<to]) + "\";"
-            } else {
-                return false
-            }
-            finish(task, url: url, status: 200, mime: "text/javascript", data: Data(javascript.utf8))
-        } catch {
-            fail(task, error)
-        }
-        return true
-    }
-
-    private static func isSafeWasmName(_ name: String) -> Bool {
-        guard name.hasSuffix(".wasm"), !name.contains("/"), !name.contains("..") else { return false }
-        return name.unicodeScalars.allSatisfy { scalar in
-            CharacterSet.alphanumerics.contains(scalar) || scalar == "." || scalar == "_" || scalar == "-"
-        }
     }
 
     private func serveBundle(_ url: URL, task: WKURLSchemeTask) {
