@@ -373,6 +373,81 @@ struct GameWebView: UIViewRepresentable {
             upgradeToHttps: true
           });
           if (location.hostname !== "game.huoying.qq.com") return;
+          var wasmNames = ["878d548199cddef07035.wasm", "172de42e6619eac8f371.wasm"];
+          var wasmReady = {};
+          var wasmWaiters = {};
+          function notifyWasm(name, bytes) {
+            wasmReady[name] = bytes;
+            var list = wasmWaiters[name] || [];
+            wasmWaiters[name] = [];
+            list.forEach(function (fn) { fn(bytes); });
+          }
+          function waitWasm(name) {
+            if (wasmReady[name]) return Promise.resolve(wasmReady[name]);
+            return new Promise(function (resolve) {
+              (wasmWaiters[name] = wasmWaiters[name] || []).push(resolve);
+            });
+          }
+          function wasmNameOf(raw) {
+            var text = String(raw || "");
+            var query = text.indexOf("?");
+            if (query >= 0) text = text.slice(0, query);
+            var slash = text.lastIndexOf("/");
+            var base = slash >= 0 ? text.slice(slash + 1) : text;
+            for (var i = 0; i < wasmNames.length; i++) {
+              if (base === wasmNames[i]) return base;
+            }
+            return null;
+          }
+          function decodeB64(b64) {
+            var bin = atob(b64);
+            var bytes = new Uint8Array(bin.length);
+            var step = 32768;
+            for (var i = 0; i < bin.length; i += step) {
+              var end = Math.min(i + step, bin.length);
+              for (var j = i; j < end; j++) bytes[j] = bin.charCodeAt(j);
+            }
+            return bytes;
+          }
+          function loadScript(src) {
+            return new Promise(function (resolve, reject) {
+              var script = document.createElement("script");
+              script.src = src;
+              script.onload = function () { resolve(); };
+              script.onerror = function () { reject(new Error(src)); };
+              (document.head || document.documentElement).appendChild(script);
+            });
+          }
+          function loadWasm(name) {
+            return loadScript("ruffle://bundle/wasm/" + name + "/manifest.js").then(function () {
+              var count = window.__airWasmCount[name];
+              var chain = Promise.resolve();
+              for (var i = 0; i < count; i++) {
+                (function (index) {
+                  chain = chain.then(function () {
+                    return loadScript("ruffle://bundle/wasm/" + name + "/" + index + ".js");
+                  });
+                })(i);
+              }
+              return chain.then(function () {
+                var b64 = window.__airWasmParts[name];
+                delete window.__airWasmParts[name];
+                notifyWasm(name, decodeB64(b64));
+              });
+            });
+          }
+          if (window.WebAssembly && WebAssembly.instantiateStreaming) {
+            var origStreaming = WebAssembly.instantiateStreaming.bind(WebAssembly);
+            WebAssembly.instantiateStreaming = function (source, imports) {
+              return origStreaming(source, imports).catch(function () {
+                return Promise.resolve(source).then(function (response) {
+                  return response.arrayBuffer();
+                }).then(function (buffer) {
+                  return WebAssembly.instantiate(buffer, imports);
+                });
+              });
+            };
+          }
           function proxied(raw) {
             try {
               var abs = new URL(String(raw), location.href);
@@ -387,6 +462,16 @@ struct GameWebView: UIViewRepresentable {
           var origFetch = window.fetch.bind(window);
           window.fetch = function (input, init) {
             var raw = typeof input === "string" ? input : (input && input.url) || "";
+            var wasmName = wasmNameOf(raw);
+            if (wasmName) {
+              return waitWasm(wasmName).then(function (bytes) {
+                return new Response(bytes.slice(0), {
+                  status: 200,
+                  statusText: "OK",
+                  headers: { "Content-Type": "application/wasm" }
+                });
+              });
+            }
             var next = proxied(raw);
             if (!next) return origFetch(input, init);
             return origFetch(next, init);
@@ -398,12 +483,12 @@ struct GameWebView: UIViewRepresentable {
             if (next) args[1] = next;
             return origOpen.apply(this, args);
           };
+          wasmNames.forEach(function (name) {
+            loadWasm(name).catch(function (error) { console.error("ruffle wasm", error); });
+          });
           setTimeout(function () {
             if (window.RufflePlayer && typeof window.RufflePlayer.newest === "function") return;
-            var script = document.createElement("script");
-            script.src = "ruffle://bundle/ruffle.js";
-            var parent = document.head || document.documentElement;
-            if (parent) parent.appendChild(script);
+            loadScript("ruffle://bundle/ruffle.js").catch(function (error) { console.error(error); });
           }, 0);
         })();
         """#
