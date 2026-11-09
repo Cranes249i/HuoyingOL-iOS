@@ -444,28 +444,7 @@ struct GameWebView: UIViewRepresentable {
             if (input && input.url) return input.url;
             return "";
           }
-          function wasmNameOf(raw) {
-            var text = String(raw || "");
-            var query = text.indexOf("?");
-            if (query >= 0) text = text.slice(0, query);
-            var slash = text.lastIndexOf("/");
-            var base = slash >= 0 ? text.slice(slash + 1) : text;
-            for (var i = 0; i < wasmNames.length; i++) {
-              if (base === wasmNames[i]) return base;
-            }
-            return null;
-          }
-          function wasmResponse(name) {
-            var bytes = ready[name];
-            if (!bytes) return Promise.reject(new Error("wasm not ready " + name));
-            window.__airWasmServed = (window.__airWasmServed || 0) + 1;
-            airStatus("wasm 已交给 Ruffle " + name + " #" + window.__airWasmServed, true);
-            return Promise.resolve(new Response(bytes.slice(0), {
-              status: 200,
-              statusText: "OK",
-              headers: { "Content-Type": "application/wasm" }
-            }));
-          }
+          window.__airRuffleStatus = airStatus;
           if (window.WebAssembly && WebAssembly.instantiateStreaming) {
             var origStreaming = WebAssembly.instantiateStreaming.bind(WebAssembly);
             WebAssembly.instantiateStreaming = function (source, imports) {
@@ -494,8 +473,6 @@ struct GameWebView: UIViewRepresentable {
           var origFetch = window.fetch.bind(window);
           window.fetch = function (input, init) {
             var raw = requestUrl(input);
-            var wasmName = wasmNameOf(raw);
-            if (wasmName) return wasmResponse(wasmName);
             var next = shouldProxy(raw);
             if (!next) return origFetch(input, init);
             return origFetch(next, init);
