@@ -10,15 +10,14 @@ on:
 jobs:
   build:
     name: Build & Package IPA
-    runs-on: macos-14 # 使用 GitHub 免费提供的 macOS M1/M2 运行环境 (预装 Xcode 15/16)
+    runs-on: macos-latest # 使用 GitHub 官方最新 macOS 运行环境 (Xcode 16+)
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Select Xcode
+      - name: Display Xcode Version
         run: |
-          sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s /Applications/Xcode_16.0.app || true
           xcodebuild -version
 
       - name: Build Archive
