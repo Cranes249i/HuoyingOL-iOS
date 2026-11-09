@@ -27,19 +27,26 @@ struct GameWebView: UIViewRepresentable {
         
         // 注入 qq-return.js 脚本 (在所有子frame中执行，用于处理跨iframe登录通信)
         injectQQReturnScript(into: configuration.userContentController)
+        // 主框架铺满屏幕：viewport-fit=cover，并按视口缩放选区页 / 游戏舞台
+        injectFullscreenScript(into: configuration.userContentController)
         
         // 创建独立的或者持久化的 WKWebView
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         
-        // 禁用页面反弹阻尼感，获得类似原生游戏的全屏体验
+        // 铺满屏幕，不把刘海/灵动岛的安全区再垫进网页视口
         webView.scrollView.bounces = false
         webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.scrollView.insetsLayoutMarginsFromSafeArea = false
+        webView.scrollView.contentInset = .zero
+        webView.scrollView.automaticallyAdjustsScrollIndicatorInsets = false
+        webView.insetsLayoutMarginsFromSafeArea = false
         webView.isOpaque = true
         webView.backgroundColor = .black
+        webView.scrollView.backgroundColor = .black
         
-        // 自定义 User-Agent，附加 HuoyingAIR/0.2 特征标志
+        // 保留 iPhone 标识。官网据此下发 ptlogin style=35，里面才有一键登录用的 pt.doOneKey / wtloginmqq。
         let defaultUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
         webView.customUserAgent = "\(defaultUA) \(AppSettings.customUserAgent)"
         
@@ -71,105 +78,175 @@ struct GameWebView: UIViewRepresentable {
            let content = try? String(contentsOf: fileURL, encoding: .utf8) {
             scriptSource = content
         } else {
-            // 内置兜底脚本实现
+            // 与 Resources/qq-return.js 保持一致，Bundle 缺失时仍能登录
             scriptSource = """
-            (() => {
-             const home="https://huoying.qq.com", graph="https://graph.qq.com";
-             const login=["https://xui.ptlogin2.qq.com","https://ssl.ptlogin2.qq.com"];
-             const type="huoying-air-qq-return-v1", origin=location.origin;
-             if(window.top===window&&origin===home){
-              let modeTimer,activeMode;
-              function wireZoneLogin(){
-               if(typeof window.loginNew!=="function"||typeof window.QcGameLogin!=="function"||window.loginNew.airNativeLogin)return;
-               const original=window.loginNew;
-               window.loginNew=function(id){
-                const cookies=new Set(document.cookie.split(";").map(x=>x.trim().split("=")[0]));
-                if(window.iUseQQConnect!=1||!cookies.has("openid")||!cookies.has("access_token"))return original.apply(this,arguments);
-                if(!window.JSON_server?.[id]&&window.all_JSON_server?.[id])window.JSON_server=window.all_JSON_server;
-                const server=window.JSON_server?.[id];
-                if(!server||server.sServerStatus==0)return original.apply(this,arguments);
-                return window.QcGameLogin(id);
-               };
-               window.loginNew.airNativeLogin=true;
-              }
-              wireZoneLogin();addEventListener("DOMContentLoaded",wireZoneLogin);addEventListener("load",wireZoneLogin);
-              if(!window.loginNew?.airNativeLogin){
-               const until=Date.now()+120000;
-               const probe=setInterval(()=>{wireZoneLogin();if(window.loginNew?.airNativeLogin||Date.now()>until)clearInterval(probe);},250);
-              }
-              function send(data){
-               for(const frame of document.querySelectorAll('iframe')) {
-                let target;try{target=new URL(frame.src).origin;}catch{continue;}
-                if(target===graph||login.includes(target))for(const destination of [graph,...login])frame.contentWindow.postMessage(data,destination);
-               }
-              }
-              window.airQqReturn={accepted:false,accept(url){
-               this.accepted=false;
-               send({type,action:"return",url});
-              },mode(kind){
-               if(kind!=="password"&&kind!=="qq")return;
-               activeMode=kind;
-               clearInterval(modeTimer);
-               for(const frame of document.querySelectorAll('iframe')){
-                let u;try{u=new URL(frame.src);}catch{continue;}
-                if(u.origin===graph&&["/oauth2.0/authorize","/oauth2.0/show"].includes(u.pathname)){
-                 u.pathname="/oauth2.0/authorize";if(kind==="qq")u.searchParams.set("display","mobile");else u.searchParams.delete("display");
-                 frame.dataset.airQqMode=kind;frame.src=u.href;
-                }
-               }
-               const attempt=String(Date.now()),started=Date.now(),deadline=started+60000;
-               let opened=false,lastOpen=0;
-               modeTimer=setInterval(()=>{
-                wireZoneLogin();
-                if(Date.now()>deadline){clearInterval(modeTimer);return;}
-                const exists=[...document.querySelectorAll('iframe')].some(f=>{try{return [graph,...login].includes(new URL(f.src).origin);}catch{return false;}});
-                if(exists)opened=true;
-                if(!exists&&!opened&&Date.now()-started>=500&&Date.now()-lastOpen>=1000){lastOpen=Date.now();document.getElementById('dologin')?.click();}
-                if(kind==="qq")for(const frame of document.querySelectorAll('iframe')){
-                 let u;try{u=new URL(frame.src);}catch{continue;}
-                 if(u.origin===graph&&["/oauth2.0/authorize","/oauth2.0/show"].includes(u.pathname)&&!frame.dataset.airQqMode){
-                  frame.dataset.airQqMode="1";u.pathname="/oauth2.0/authorize";u.searchParams.set("display","mobile");frame.src=u.href;
-                 }
-                }
-                send({type,action:kind,attempt});
-               },250);
-              }};
-              addEventListener('message',e=>{
-               if(e.data?.type===type&&e.data.action==="accepted"&&(e.origin===graph||login.includes(e.origin))&&
-                 [...document.querySelectorAll('iframe')].some(f=>f.contentWindow===e.source))window.airQqReturn.accepted=true;
-               if(e.data?.type===type&&e.data.action==="mode-ready"&&(e.origin===graph||login.includes(e.origin))&&
-                 [...document.querySelectorAll('iframe')].some(f=>f.contentWindow===e.source)&&activeMode==="qq")clearInterval(modeTimer);
-              });return;
-             }
-             if(origin!==graph&&!login.includes(origin))return;
-             let issued;
-             addEventListener('message',e=>{
-              const d=e.data;if(d?.type!==type)return;
-              if(origin===graph&&["accepted","mode-ready"].includes(d.action)&&login.includes(e.origin)&&
-                [...document.querySelectorAll('iframe')].some(f=>f.contentWindow===e.source)){
-               window.parent.postMessage({type,action:d.action},home);return;
-              }
-              if(e.source!==window.parent)return;
-              if(origin===graph){
-               if(e.origin!==home)return;
-               for(const f of document.querySelectorAll('iframe'))for(const target of login)f.contentWindow.postMessage(d,target);
-              }else if((e.origin===home||e.origin===graph)&&d.action==="return"&&typeof d.url==="string"){
-               let u;try{u=new URL(d.url);}catch{return;}
-               if(u.origin!=="https://ssl.ptlogin2.qq.com"||u.pathname!=="/jump"||u.username||u.password||u.hash)return;
-               window.parent.postMessage({type,action:"accepted"},e.origin);location.replace(u.href);
-              }else if((e.origin===home||e.origin===graph)&&typeof d.attempt==="string"&&issued!==d.attempt){
-               if(d.action==="password"&&document.getElementById('switcher_plogin')){
-                if(document.readyState!=="complete"||typeof window.pt?.plogin?.switchpage!=="function")return;
-                document.getElementById('switcher_plogin').click();
-                if(window.pt.plogin.loginState!==1||!(document.getElementById('p')?.getBoundingClientRect().height>0))return;
-                issued=d.attempt;
-               }else if(d.action==="qq"&&window.pt?.hasInit&&typeof window.pt.doOneKey==="function"){
-                issued=d.attempt;window.pt.isAndroid=true;window.pt.doOneKey();
-               }else return;
-               window.parent.postMessage({type,action:"mode-ready"},e.origin);
-              }
-             });
-            })();
+// QQ 登录桥：把官网 iframe 登录和原生壳接上。
+// 密码登录要露出 style=35 里被隐藏的账号密码框；快捷登录调用 pt.doOneKey() 拉起手机 QQ。
+(() => {
+ const home="https://huoying.qq.com", graph="https://graph.qq.com";
+ const login=["https://xui.ptlogin2.qq.com","https://ssl.ptlogin2.qq.com"];
+ const type="huoying-air-qq-return-v1", origin=location.origin;
+ if(origin===home&&/\/comm-htdocs\/login\/qccallback\.html$/i.test(location.pathname)){
+  try{
+   const q=new URLSearchParams(location.search);
+   const payload={code:q.get("code")||"",state:q.get("state")||"",error:q.get("error")||"",error_description:q.get("error_description")||""};
+   const parentWin=window.parent;
+   if(parentWin&&parentWin!==window&&typeof parentWin.qqConnectCallback==="function")parentWin.qqConnectCallback(payload);
+   else if(typeof window.qqConnectCallback==="function")window.qqConnectCallback(payload);
+  }catch(e){}
+ }
+ if(window.top===window&&origin===home){
+  let modeTimer,activeMode;
+  function wireZoneLogin(){
+   if(typeof window.loginNew!=="function"||typeof window.QcGameLogin!=="function"||window.loginNew.airNativeLogin)return;
+   const original=window.loginNew;
+   window.loginNew=function(id){
+    const cookies=new Set(document.cookie.split(";").map(x=>x.trim().split("=")[0]));
+    if(window.iUseQQConnect!=1||!cookies.has("openid")||!cookies.has("access_token"))return original.apply(this,arguments);
+    if(!window.JSON_server?.[id]&&window.all_JSON_server?.[id])window.JSON_server=window.all_JSON_server;
+    const server=window.JSON_server?.[id];
+    if(!server||server.sServerStatus==0)return original.apply(this,arguments);
+    return window.QcGameLogin(id);
+   };
+   window.loginNew.airNativeLogin=true;
+  }
+  wireZoneLogin();addEventListener("DOMContentLoaded",wireZoneLogin);addEventListener("load",wireZoneLogin);
+  if(!window.loginNew?.airNativeLogin){
+   const until=Date.now()+120000;
+   const probe=setInterval(()=>{wireZoneLogin();if(window.loginNew?.airNativeLogin||Date.now()>until)clearInterval(probe);},250);
+  }
+  function send(data){
+   for(const frame of document.querySelectorAll("iframe")) {
+    let target;try{target=new URL(frame.src,location.href).origin;}catch{continue;}
+    if(target===graph||login.includes(target))for(const destination of [graph,...login])frame.contentWindow.postMessage(data,destination);
+   }
+  }
+  function fitLoginFrame(){
+   if(!document.getElementById("air-login-fit")){
+    const style=document.createElement("style");
+    style.id="air-login-fit";
+    style.textContent=".qConnectLogin,.qConnectLoginCover{position:fixed!important;left:0!important;top:0!important;width:100%!important;height:100%!important;}.qConnectLoginContent{width:100%!important;height:100%!important;left:0!important;top:0!important;margin:0!important;max-width:none!important;border:0!important;border-radius:0!important;}.qConnectLoginContent .loginframe,iframe.loginframe{width:100%!important;height:100%!important;}";
+    (document.head||document.documentElement).appendChild(style);
+   }
+   const box=document.querySelector(".qConnectLoginContent");
+   if(box){
+    box.style.width="100%";box.style.height="100%";box.style.left="0";box.style.top="0";box.style.margin="0";
+   }
+   for(const frame of document.querySelectorAll("iframe.loginframe,#loginIframe")){
+    frame.style.width="100%";frame.style.height="100%";
+   }
+  }
+  window.airQqReturn={accepted:false,accept(url){
+   this.accepted=false;
+   send({type,action:"return",url});
+  },mode(kind){
+   if(kind!=="password"&&kind!=="qq")return;
+   activeMode=kind;
+   clearInterval(modeTimer);
+   fitLoginFrame();
+   for(const frame of document.querySelectorAll("iframe")){
+    let u;try{u=new URL(frame.src,location.href);}catch{continue;}
+    if(u.origin===graph&&["/oauth2.0/authorize","/oauth2.0/show"].includes(u.pathname)){
+     u.pathname="/oauth2.0/authorize";
+     if(kind==="qq")u.searchParams.set("display","mobile");
+     frame.dataset.airQqMode=kind;frame.src=u.href;
+    }
+   }
+   const attempt=String(Date.now()),started=Date.now(),deadline=started+60000;
+   let opened=false,lastOpen=0;
+   modeTimer=setInterval(()=>{
+    wireZoneLogin();
+    fitLoginFrame();
+    if(Date.now()>deadline){clearInterval(modeTimer);return;}
+    const exists=[...document.querySelectorAll("iframe")].some(f=>{try{return [graph,...login].includes(new URL(f.src,location.href).origin);}catch{return false;}});
+    if(exists)opened=true;
+    if(!exists&&!opened&&Date.now()-started>=500&&Date.now()-lastOpen>=1000){
+     lastOpen=Date.now();
+     const btn=document.getElementById("dologin");
+     if(btn)btn.click();
+     else if(window.LoginManager&&typeof window.LoginManager.login==="function"){try{window.LoginManager.login();}catch(e){}}
+    }
+    if(kind==="qq")for(const frame of document.querySelectorAll("iframe")){
+     let u;try{u=new URL(frame.src,location.href);}catch{continue;}
+     if(u.origin===graph&&["/oauth2.0/authorize","/oauth2.0/show"].includes(u.pathname)&&frame.dataset.airQqMode!=="qq"){
+      frame.dataset.airQqMode="qq";u.pathname="/oauth2.0/authorize";u.searchParams.set("display","mobile");frame.src=u.href;
+     }
+    }
+    send({type,action:kind,attempt});
+   },250);
+  }};
+  addEventListener("message",e=>{
+   if(e.data?.type!==type)return;
+   const fromFrame=[...document.querySelectorAll("iframe")].some(f=>f.contentWindow===e.source);
+   if(!fromFrame)return;
+   if(e.data.action==="accepted"&&(e.origin===graph||login.includes(e.origin)))window.airQqReturn.accepted=true;
+   if(e.data.action==="mode-ready"&&(e.origin===graph||login.includes(e.origin)))clearInterval(modeTimer);
+  });return;
+ }
+ if(origin!==graph&&!login.includes(origin))return;
+ let issued;
+ function isJump(url){
+  try{
+   const u=new URL(url);
+   return /ptlogin2\.qq\.com$/.test(u.hostname)&&u.pathname==="/jump"&&!u.username&&!u.password&&!u.hash;
+  }catch(e){return false;}
+ }
+ function revealPassword(){
+  const p=document.getElementById("p"),u=document.getElementById("u");
+  const already=!!(p&&p.getBoundingClientRect().height>0);
+  if(!already){
+   try{if(typeof window.pt?.switchpwd==="function")window.pt.switchpwd();}catch(e){}
+   const sw=document.getElementById("switcher_plogin");
+   if(sw)sw.click();
+   const qrSwitch=document.getElementById("qrlogin_switch");
+   if(qrSwitch&&!sw)qrSwitch.click();
+   try{if(typeof window.pt?.hideOneKey==="function")window.pt.hideOneKey();}catch(e){}
+  }
+  const qr=document.getElementById("qrlogin");
+  if(qr)qr.style.display="none";
+  const pwd=document.getElementById("pwdlogin")||document.getElementById("web_login");
+  if(pwd)pwd.style.display="block";
+  const form=document.getElementById("form_outter_wrap");
+  if(form)form.style.display="block";
+  const go=document.getElementById("go");
+  if(go)go.style.display="block";
+  const onekey=document.getElementById("onekey");
+  if(onekey)onekey.style.display="none";
+  const visible=!!(p&&p.getBoundingClientRect().height>0);
+  if(!already&&visible&&u&&document.activeElement!==u&&document.activeElement!==p){try{u.focus();}catch(e){}}
+  return visible;
+ }
+ function launchQQ(){
+  if(window.pt&&window.pt.hasInit&&typeof window.pt.doOneKey==="function"){
+   window.pt.doOneKey();
+   return true;
+  }
+  const btn=document.getElementById("onekey");
+  if(btn){btn.click();return true;}
+  return false;
+ }
+ addEventListener("message",e=>{
+  const d=e.data;if(d?.type!==type)return;
+  if(origin===graph&&["accepted","mode-ready"].includes(d.action)&&login.includes(e.origin)&&
+    [...document.querySelectorAll("iframe")].some(f=>f.contentWindow===e.source)){
+   window.parent.postMessage({type,action:d.action},home);return;
+  }
+  if(e.source!==window.parent)return;
+  if(origin===graph){
+   if(e.origin!==home)return;
+   for(const f of document.querySelectorAll("iframe"))for(const target of login)f.contentWindow.postMessage(d,target);
+  }else if((e.origin===home||e.origin===graph)&&d.action==="return"&&typeof d.url==="string"){
+   if(!isJump(d.url))return;
+   window.parent.postMessage({type,action:"accepted"},e.origin);location.replace(d.url);
+  }else if((e.origin===home||e.origin===graph)&&typeof d.attempt==="string"){
+   if(d.action==="password"){revealPassword();return;}
+   if(issued===d.attempt)return;
+   if(d.action!=="qq"||!launchQQ())return;
+   issued=d.attempt;
+   window.parent.postMessage({type,action:"mode-ready"},e.origin);
+  }
+ });
+})();
             """
         }
         
@@ -179,6 +256,81 @@ struct GameWebView: UIViewRepresentable {
             forMainFrameOnly: false
         )
         contentController.addUserScript(userScript)
+    }
+
+    /// 让选区页和游戏舞台贴着物理屏幕，而不是停在安全区或 1020×600 的最小舞台里。
+    private func injectFullscreenScript(into contentController: WKUserContentController) {
+        let source = """
+        (() => {
+          if (window.top !== window) return;
+          var host = location.hostname;
+          if (!/(^|\.)huoying\.qq\.com$/.test(host)) return;
+          function installViewport() {
+            var head = document.head || document.documentElement;
+            var meta = document.querySelector('meta[name="viewport"]');
+            if (!meta) {
+              meta = document.createElement("meta");
+              meta.setAttribute("name", "viewport");
+              head.appendChild(meta);
+            }
+            meta.setAttribute("content", "width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover");
+          }
+          function fitGame(stage) {
+            var w = window.innerWidth, h = window.innerHeight;
+            if (!stage) return;
+            stage.style.width = w + "px";
+            stage.style.height = h + "px";
+            stage.style.maxWidth = "none";
+            stage.style.maxHeight = "none";
+            document.documentElement.style.height = "100%";
+            document.documentElement.style.overflow = "hidden";
+            document.body.style.margin = "0";
+            document.body.style.minWidth = "0";
+            document.body.style.width = w + "px";
+            document.body.style.height = h + "px";
+            document.body.style.overflow = "hidden";
+            document.body.style.background = "#000";
+            var child = stage.firstElementChild;
+            if (child) { child.style.width = w + "px"; child.style.height = h + "px"; }
+          }
+          function fitServer() {
+            var wrap = document.querySelector(".wrap");
+            if (!wrap) return;
+            var design = 1000;
+            var scale = window.innerWidth / design;
+            wrap.style.transformOrigin = "0 0";
+            wrap.style.transform = "scale(" + scale + ")";
+            wrap.style.width = design + "px";
+            document.documentElement.style.overflowX = "hidden";
+            document.body.style.margin = "0";
+            document.body.style.minWidth = "0";
+            document.body.style.overflowX = "hidden";
+            document.body.style.width = window.innerWidth + "px";
+            document.body.style.background = "#ebebeb";
+            var footer = document.getElementById("gfooter");
+            if (footer) {
+              footer.style.transformOrigin = "0 0";
+              footer.style.transform = "scale(" + scale + ")";
+              footer.style.width = design + "px";
+            }
+            var used = wrap.offsetHeight * scale + (footer ? footer.offsetHeight * scale : 0);
+            document.body.style.height = Math.max(window.innerHeight, used) + "px";
+          }
+          function fit() {
+            installViewport();
+            var stage = document.getElementById("resizeTarget");
+            if (stage || location.hostname.indexOf("game.") === 0) fitGame(stage);
+            else fitServer();
+          }
+          if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", fit);
+          window.addEventListener("load", fit);
+          window.addEventListener("resize", fit);
+          window.addEventListener("orientationchange", fit);
+          setInterval(fit, 700);
+          fit();
+        })();
+        """
+        contentController.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
     }
     
     // MARK: - Coordinator
@@ -240,23 +392,30 @@ struct GameWebView: UIViewRepresentable {
                 return
             }
             
-            // 拦截 QQ 登录自定义回调 URL Scheme (huoyingairqq://login)
-            if url.scheme == AppSettings.qqCallbackScheme {
+            if QQLoginService.isAppCallback(url) {
                 viewModel.handleQQCallback(url: url)
                 decisionHandler(.cancel)
                 return
             }
-            
-            // 拦截 QQ 手机客户端快捷登录协议 (wtloginmqq://)
-            if url.scheme == "wtloginmqq" || url.scheme == "mqq" {
-                if UIApplication.shared.canOpenURL(url) {
-                    UIApplication.shared.open(url, options: [:], completionHandler: nil)
-                }
+
+            // 一键登录会把顶层或隐藏 iframe 导航到 wtloginmqq:// 等 scheme。
+            // canOpenURL 在 scheme 未声明时恒为 false，不能拿它当开关，否则 QQ 永远不会被打开。
+            if QQLoginService.shouldOpenExternally(url) {
+                openQQApp(QQLoginService.urlForQQApp(url))
                 decisionHandler(.cancel)
                 return
             }
             
             decisionHandler(.allow)
+        }
+
+        private func openQQApp(_ url: URL) {
+            UIApplication.shared.open(url, options: [:]) { [weak self] success in
+                guard let self = self, !success else { return }
+                DispatchQueue.main.async {
+                    self.viewModel.errorMessage = "未能打开手机 QQ。请确认已安装 QQ 后，再点一次「QQ快捷登录」。"
+                }
+            }
         }
         
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -265,11 +424,27 @@ struct GameWebView: UIViewRepresentable {
         }
         
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            let nsError = error as NSError
+            if nsError.code == NSURLErrorCancelled || nsError.code == 102 {
+                viewModel.updateLoadingState(false)
+                return
+            }
             viewModel.updateLoadingState(false)
             viewModel.errorMessage = error.localizedDescription
         }
         
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            let nsError = error as NSError
+            if let failed = nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL, QQLoginService.shouldOpenExternally(failed) {
+                openQQApp(QQLoginService.urlForQQApp(failed))
+                viewModel.updateLoadingState(false)
+                return
+            }
+            // 自定义 scheme 被取消时 WebKit 会报帧加载中断，不必当成页面错误弹出来。
+            if nsError.code == NSURLErrorCancelled || nsError.code == 102 {
+                viewModel.updateLoadingState(false)
+                return
+            }
             viewModel.updateLoadingState(false)
             viewModel.errorMessage = error.localizedDescription
         }
@@ -282,8 +457,18 @@ struct GameWebView: UIViewRepresentable {
             for navigationAction: WKNavigationAction,
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
-            // 在同一 WebView 中加载弹出的网页链接
-            if navigationAction.targetFrame == nil {
+            guard let url = navigationAction.request.url else { return nil }
+            if QQLoginService.isAppCallback(url) {
+                viewModel.handleQQCallback(url: url)
+                return nil
+            }
+            if QQLoginService.shouldOpenExternally(url) {
+                openQQApp(QQLoginService.urlForQQApp(url))
+                return nil
+            }
+            // 只把真正的网页弹窗留在当前 WebView。about:blank 会把选区页替换掉。
+            let scheme = url.scheme?.lowercased() ?? ""
+            if navigationAction.targetFrame == nil, scheme == "http" || scheme == "https" {
                 webView.load(navigationAction.request)
             }
             return nil

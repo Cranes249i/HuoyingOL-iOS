@@ -22,8 +22,10 @@ class AppSettings: ObservableObject {
     static let maxSpeed: Double = 5.0
     /// 默认速度倍率
     static let defaultSpeed: Double = 1.0
-    /// QQ AppID
+    /// 旧版 QQ AppID（tencent scheme 仍需注册）
     static let qqAppId = "1103286479"
+    /// 官网当前 QQ 互联 AppID（qqConnectConfig.js 的 qcAppid）
+    static let qqConnectAppId = "102045649"
     /// 自定义UserAgent
     static let customUserAgent = "HuoyingAIR/0.2"
     /// 游戏主页URL

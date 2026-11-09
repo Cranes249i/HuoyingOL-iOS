@@ -82,11 +82,90 @@ class QQLoginService {
     
     // MARK: - 回调处理
     
-    /// 判断URL是否为QQ回调URL
-    /// - Parameter url: 待判断的URL
-    /// - Returns: 是否为回调URL
+    /// 手机 QQ 会拉起的自定义 scheme。未列入 LSApplicationQueriesSchemes 时 canOpenURL 会恒为 false。
+    static let qqAppSchemes: Set<String> = [
+        "wtloginmqq", "wtloginmqq2", "wtloginmqq3",
+        "mqq", "mqqapi", "mqqwpa", "mqqconnect", "mqqsecure",
+        "mqqopensdkapi", "mqqopensdkapiv2", "mqqopensdkapiv3", "mqqopensdkapiv4",
+        "mqqopensdknopasteboard", "mqqopensdkfull", "mqqopensdkminiapp", "mqqopensdklaunchminiapp",
+        "mqqflyticket", "mqzone", "tencentapi", "tim"
+    ]
+
+    /// 判断 URL 是否为 QQ 登录完成后回到本应用的回调。
     func isCallbackURL(_ url: URL) -> Bool {
-        return url.scheme == callbackScheme
+        return QQLoginService.isAppCallback(url)
+    }
+
+    /// huoyingairqq:// 以及 tencent{appid}:// 都是回到壳内的回调，不能再拿去 open 到 QQ。
+    static func isAppCallback(_ url: URL) -> Bool {
+        let scheme = url.scheme?.lowercased() ?? ""
+        if scheme == AppSettings.qqCallbackScheme { return true }
+        if scheme == "tencent\(AppSettings.qqAppId)" { return true }
+        if scheme == "tencent\(AppSettings.qqConnectAppId)" { return true }
+        return false
+    }
+
+    /// 是否应交给手机 QQ 打开（一键登录 / 互联 scheme）。
+    static func shouldOpenExternally(_ url: URL) -> Bool {
+        let scheme = url.scheme?.lowercased() ?? ""
+        if scheme == "http" || scheme == "https" || scheme.isEmpty { return false }
+        if isAppCallback(url) { return false }
+        return qqAppSchemes.contains(scheme)
+    }
+
+    /// 给一键登录链接补上回到本应用的 schemacallback，避免 QQ 把结果丢进系统浏览器。
+    static func urlForQQApp(_ url: URL) -> URL {
+        let absolute = url.absoluteString
+        if absolute.lowercased().contains("schemacallback=") { return url }
+        let joiner = absolute.contains("?") ? "&" : "?"
+        let callback = "\(AppSettings.qqCallbackScheme)://login"
+            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "\(AppSettings.qqCallbackScheme)://login"
+        return URL(string: absolute + joiner + "schemacallback=" + callback) ?? url
+    }
+
+    /// 从 QQ 回到壳内的 URL 还原出 ptlogin jump 地址，供网页继续完成 OAuth。
+    func jumpURL(from callback: URL) -> URL? {
+        guard let components = URLComponents(url: callback, resolvingAgainstBaseURL: false) else { return nil }
+        let items = components.queryItems ?? []
+
+        if let raw = items.first(where: { $0.name == "url" || $0.name == "u1" })?.value,
+           let jump = Self.normalizedJumpURL(raw) {
+            return jump
+        }
+        if let raw = items.first(where: { $0.name == "p" })?.value,
+           let jump = Self.normalizedJumpURL(raw) {
+            return jump
+        }
+        if items.contains(where: { $0.name == "clientuin" }) {
+            var jump = URLComponents(string: "https://ssl.ptlogin2.qq.com/jump")
+            jump?.queryItems = items.filter { item in
+                ["clientuin", "clientkey", "keyindex", "u1", "pt_3rd_aid"].contains(item.name) || item.name.hasPrefix("pt_")
+            }
+            if let url = jump?.url, Self.normalizedJumpURL(url.absoluteString) != nil {
+                return url
+            }
+        }
+        return nil
+    }
+
+    private static func normalizedJumpURL(_ raw: String) -> URL? {
+        let decoded = raw.removingPercentEncoding ?? raw
+        let candidates = [raw, decoded]
+        for candidate in candidates {
+            if let url = URL(string: candidate), isPtloginJump(url) { return url }
+            if candidate.contains("u1=") || candidate.contains("clientuin="),
+               let url = URL(string: "https://ssl.ptlogin2.qq.com/jump?\(candidate)"),
+               isPtloginJump(url) {
+                return url
+            }
+        }
+        return nil
+    }
+
+    private static func isPtloginJump(_ url: URL) -> Bool {
+        guard url.scheme == "https", url.path == "/jump", url.user == nil, url.password == nil else { return false }
+        let host = url.host?.lowercased() ?? ""
+        return host == "ssl.ptlogin2.qq.com" || host == "xui.ptlogin2.qq.com" || host.hasSuffix(".ptlogin2.qq.com")
     }
     
     /// 判断URL是否为QQ登录跳转URL

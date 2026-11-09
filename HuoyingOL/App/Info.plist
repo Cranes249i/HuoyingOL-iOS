@@ -12,6 +12,23 @@
     <key>CFBundleIdentifier</key>
     <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
     
+    <!-- 未签名 IPA 校验需要这些键，Xcode 打包时会展开变量 -->
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+    <key>MinimumOSVersion</key>
+    <string>16.0</string>
+    <key>UIDeviceFamily</key>
+    <array>
+        <integer>1</integer>
+        <integer>2</integer>
+    </array>
+
     <!-- 版本信息 -->
     <key>CFBundleShortVersionString</key>
     <string>1.0</string>
@@ -28,8 +45,10 @@
             <array>
                 <!-- QQ OAuth回调scheme -->
                 <string>huoyingairqq</string>
-                <!-- QQ SDK要求的tencent+appid格式 -->
+                <!-- 旧版 QQ SDK：tencent+appid -->
                 <string>tencent1103286479</string>
+                <!-- 当前官网 QQ 互联 AppID -->
+                <string>tencent102045649</string>
             </array>
         </dict>
     </array>
@@ -52,9 +71,10 @@
     <key>UIViewControllerBasedStatusBarAppearance</key>
     <false/>
     
-    <!-- 启动画面使用Storyboard -->
-    <key>UILaunchStoryboardName</key>
-    <string>LaunchScreen</string>
+    <!-- 空的 UILaunchScreen 让现代刘海/灵动岛机型按真实分辨率全屏启动。
+         不要再指向不存在的 LaunchScreen.storyboard，否则系统会退回兼容模式并留黑边。 -->
+    <key>UILaunchScreen</key>
+    <dict/>
     
     <!-- 后台模式 - 音频保活 -->
     <key>UIBackgroundModes</key>
@@ -87,11 +107,26 @@
     <!-- 查询QQ URL Scheme -->
     <key>LSApplicationQueriesSchemes</key>
     <array>
+        <string>wtloginmqq</string>
+        <string>wtloginmqq2</string>
+        <string>wtloginmqq3</string>
         <string>mqq</string>
         <string>mqqapi</string>
+        <string>mqqwpa</string>
+        <string>mqqconnect</string>
+        <string>mqqsecure</string>
+        <string>mqqopensdkapi</string>
         <string>mqqopensdkapiV2</string>
+        <string>mqqopensdkapiV3</string>
+        <string>mqqopensdkapiV4</string>
         <string>mqqopensdknopasteboard</string>
         <string>mqqopensdkfull</string>
+        <string>mqqopensdkminiapp</string>
+        <string>mqqopensdklaunchminiapp</string>
+        <string>mqqflyticket</string>
+        <string>mqzone</string>
+        <string>tencentapi</string>
+        <string>tim</string>
     </array>
 </dict>
 </plist>

@@ -134,34 +134,40 @@ class GameViewModel: ObservableObject {
         }
     }
     
-    /// 处理QQ OAuth回调
-    /// - Parameter url: 回调URL
+    /// 处理 QQ 回到本应用后的 URL，把 ptlogin jump 交回登录 iframe 完成 OAuth。
     func handleQQCallback(url: URL) {
         print("📱 收到QQ回调: \(url.absoluteString)")
-        
-        // 解析回调URL中的参数
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
-        
-        // 提取跳转URL
-        // 回调格式可能是: huoyingairqq://login?url=https://ssl.ptlogin2.qq.com/jump?...
-        if let jumpURLString = components.queryItems?.first(where: { $0.name == "url" })?.value,
-           let jumpURL = URL(string: jumpURLString) {
-            // 通过qq-return.js传递回调URL到WebView
-            let js = "window.airQqReturn && window.airQqReturn.accept('\(jumpURL.absoluteString)');"
-            webView?.evaluateJavaScript(js) { _, error in
-                if let error = error {
-                    print("❌ 传递QQ回调失败: \(error.localizedDescription)")
-                }
-            }
-        } else {
-            // 直接将整个URL传递
-            let js = "window.airQqReturn && window.airQqReturn.accept('\(url.absoluteString)');"
-            webView?.evaluateJavaScript(js) { _, error in
-                if let error = error {
-                    print("❌ 传递QQ回调失败: \(error.localizedDescription)")
-                }
+
+        guard let jumpURL = qqLoginService.jumpURL(from: url) else {
+            errorMessage = "QQ 已返回，但没有可继续的登录地址。请再试一次快捷登录。"
+            return
+        }
+
+        let literal = Self.jsQuoted(jumpURL.absoluteString)
+        let js = """
+        (function(){
+          var url = \(literal);
+          if (window.airQqReturn && typeof window.airQqReturn.accept === 'function') {
+            window.airQqReturn.accept(url);
+            return;
+          }
+          if (/ptlogin2\.qq\.com$/.test(location.hostname)) location.replace(url);
+        })();
+        """
+        webView?.evaluateJavaScript(js) { _, error in
+            if let error = error {
+                print("❌ 传递QQ回调失败: \(error.localizedDescription)")
             }
         }
+    }
+
+    private static func jsQuoted(_ value: String) -> String {
+        let escaped = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+            .replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\r", with: "")
+        return "'\(escaped)'"
     }
     
     // MARK: - 速度控制

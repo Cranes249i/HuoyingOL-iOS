@@ -29,12 +29,10 @@ struct HuoyingOLApp: App {
         }
     }
     
-    /// 处理QQ登录回调URL
-    /// QQ OAuth认证完成后，通过 huoyingairqq://login 回调到应用
+    /// 处理 QQ 登录回调。快捷登录约定回到 huoyingairqq://，部分客户端会用 tencent{appid}://。
     private func handleURLScheme(_ url: URL) {
-        guard url.scheme == "huoyingairqq" else { return }
-        
-        // 通知当前活跃的GameViewModel处理回调
+        guard QQLoginService.isAppCallback(url) else { return }
+
         NotificationCenter.default.post(
             name: .qqLoginCallback,
             object: nil,

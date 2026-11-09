@@ -58,6 +58,7 @@ struct AccountListView: View {
             .navigationBarHidden(true)
             .fullScreenCover(item: $launchingAccount) { account in
                 GameContainerView(account: account)
+                    .ignoresSafeArea()
                     .environmentObject(accountManager)
                     .environmentObject(appSettings)
             }

@@ -36,9 +36,12 @@ struct GameContainerView: View {
     }
     
     var body: some View {
+        GeometryReader { proxy in
         ZStack {
-            // 游戏WebView（全屏）
+            Color.black
+            // 游戏WebView（贴边，含刘海/灵动岛区域）
             GameWebView(viewModel: viewModel)
+                .frame(width: proxy.size.width, height: proxy.size.height)
                 .ignoresSafeArea()
             
             // 加载进度条
@@ -75,14 +78,24 @@ struct GameContainerView: View {
                 }
             }
             
-            // 浮动控制按钮
+            // 浮动控制按钮（避开刘海，网页本身仍然贴边）
             floatingButton
+                .padding(.top, proxy.safeAreaInsets.top)
+                .padding(.trailing, proxy.safeAreaInsets.trailing)
+                .padding(.leading, proxy.safeAreaInsets.leading)
             
             // 控制面板
             if showControls {
                 controlPanel
+                    .padding(.top, proxy.safeAreaInsets.top)
+                    .padding(.trailing, proxy.safeAreaInsets.trailing)
+                    .padding(.leading, proxy.safeAreaInsets.leading)
             }
         }
+        .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+        .ignoresSafeArea()
+        .persistentSystemOverlays(.hidden)
         .onAppear {
             viewModel.accountManager = accountManager
             if appSettings.backgroundKeepAlive {
