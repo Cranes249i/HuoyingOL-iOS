@@ -2,12 +2,13 @@
 //  RuffleSchemeHandler.swift
 //  HuoyingOL
 //
-//  把随包的 Ruffle（ruffle.js / core / wasm）和跨域 SWF 交给 WKWebView。
-//  页面是 https，CDN 的 entry.swf 没有 CORS，浏览器里的 fetch 会被拦住，所以由这里代为下载。
+//  自定义 scheme ruffle:// 在真机 WKWebView 里 fetch / script 都到不了这里，所以不再用它送 wasm 或 entry.swf。
+//  SWF 和 res.huoying 资源走 AirNativeFetchBridge：URLSession 下载后把 base64 交回页面，由 window.fetch 组成 Response。
+//  本 handler 先留着，页面不再依赖它。
 //
 //  已知限制：火影 OL 的 entry.swf 是 ActionScript 3，并用 Flash Socket 连 zone.huoying.qq.com。
 //  Ruffle 0.7 不能直接做 TCP Socket，只能走 socketProxy（本仓库没有配套代理）。
-//  舞台可以起来，连区服端口时仍可能失败。下一步才是自建 TCP→WebSocket 代理，或换能跑 AIR 的运行时。
+//  SWF 能下来之后，连区服端口时仍可能失败。
 //
 
 import Foundation
@@ -175,4 +176,147 @@ final class RuffleSchemeHandler: NSObject, WKURLSchemeHandler {
         return false
     }
 
+}
+
+/// 页面里的 `window.fetch`（Ruffle 的 `__wbg_fetch` 调的就是它）不能跨域读 entry.swf。
+/// 真机上 `ruffle://` 也到不了 WKURLSchemeHandler，所以由这里用 URLSession 把字节送回 JS。
+final class AirNativeFetchBridge: NSObject, WKScriptMessageHandler {
+    static let handlerName = "airNativeFetch"
+    static let maxBytes = 48 * 1024 * 1024
+
+    weak var webView: WKWebView?
+
+    private let session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 45
+        config.timeoutIntervalForResource = 90
+        config.httpShouldSetCookies = false
+        config.urlCache = nil
+        return URLSession(configuration: config)
+    }()
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let body = message.body as? [String: Any] else { return }
+        let id = (body["id"] as? String) ?? ""
+        guard id.range(of: "^[A-Za-z0-9]{1,32}$", options: .regularExpression) != nil else { return }
+        guard let raw = body["url"] as? String, let url = URL(string: raw), Self.allows(url) else {
+            deliver(id: id, status: 0, mime: "", data: nil, error: "blocked url")
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue(AppSettings.desktopWebUserAgent, forHTTPHeaderField: "User-Agent")
+        let task = session.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+            if let error = error {
+                self.deliver(id: id, status: 0, mime: "", data: nil, error: error.localizedDescription)
+                return
+            }
+            let http = response as? HTTPURLResponse
+            let status = http?.statusCode ?? 0
+            var mime = http?.mimeType ?? ""
+            if url.path.lowercased().contains(".swf") {
+                mime = "application/x-shockwave-flash"
+            } else if mime.isEmpty {
+                mime = Self.mime(for: url)
+            }
+            let bytes = data ?? Data()
+            if bytes.count > Self.maxBytes {
+                self.deliver(id: id, status: 0, mime: "", data: nil, error: "response too large")
+                return
+            }
+            self.deliver(id: id, status: status, mime: mime, data: bytes, error: nil)
+        }
+        task.resume()
+    }
+
+    private func deliver(id: String, status: Int, mime: String, data: Data?, error: String?) {
+        var scripts: [String] = []
+        if error == nil, let data = data, !data.isEmpty {
+            let encoded = data.base64EncodedString()
+            let size = 120_000
+            var start = encoded.startIndex
+            while start < encoded.endIndex {
+                let end = encoded.index(start, offsetBy: size, limitedBy: encoded.endIndex) ?? encoded.endIndex
+                let chunk = String(encoded[start..<end])
+                scripts.append("window.__airNativePush&&window.__airNativePush(\(Self.jsString(id)),\(Self.jsString(chunk)))")
+                start = end
+            }
+        }
+        let errorJS = error.map(Self.jsString) ?? "null"
+        scripts.append("window.__airNativeFinish&&window.__airNativeFinish(\(Self.jsString(id)),\(status),\(Self.jsString(mime)),\(errorJS))")
+        run(scripts)
+    }
+
+    private func run(_ scripts: [String]) {
+        DispatchQueue.main.async { [weak self] in
+            self?.runOnMain(scripts, index: 0)
+        }
+    }
+
+    private func runOnMain(_ scripts: [String], index: Int) {
+        guard index < scripts.count, let webView = webView else { return }
+        webView.evaluateJavaScript(scripts[index]) { [weak self] _, _ in
+            self?.runOnMain(scripts, index: index + 1)
+        }
+    }
+
+    private static func allows(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return false }
+        guard let host = url.host?.lowercased(), !host.isEmpty, !isBlocked(host) else { return false }
+        if host == "res.huoying.qq.com" || host == "res.huoying.com" { return true }
+        return url.path.lowercased().contains(".swf")
+    }
+
+    private static func isBlocked(_ host: String) -> Bool {
+        if host == "localhost" || host.hasSuffix(".local") || host == "0.0.0.0" || host == "::1" { return true }
+        if host.hasPrefix("127.") || host.hasPrefix("10.") || host.hasPrefix("192.168.") || host.hasPrefix("169.254.") { return true }
+        if host.hasPrefix("172.") {
+            let parts = host.split(separator: ".")
+            if parts.count > 1, let second = Int(parts[1]), (16...31).contains(second) { return true }
+        }
+        return false
+    }
+
+    private static func mime(for url: URL) -> String {
+        let path = url.path.lowercased()
+        if path.contains(".swf") { return "application/x-shockwave-flash" }
+        if path.hasSuffix(".png") { return "image/png" }
+        if path.hasSuffix(".jpg") || path.hasSuffix(".jpeg") { return "image/jpeg" }
+        if path.hasSuffix(".gif") { return "image/gif" }
+        if path.hasSuffix(".xml") { return "application/xml" }
+        if path.hasSuffix(".json") { return "application/json" }
+        if path.hasSuffix(".mp3") { return "audio/mpeg" }
+        if path.hasSuffix(".txt") { return "text/plain" }
+        return "application/octet-stream"
+    }
+
+    private static func jsString(_ value: String) -> String {
+        var out = "\""
+        for scalar in value.unicodeScalars {
+            switch scalar.value {
+            case 0x5C:
+                out += "\\\\"
+            case 0x22:
+                out += "\\\""
+            case 0x2028:
+                out += "\\u2028"
+            case 0x2029:
+                out += "\\u2029"
+            case 0..<0x20:
+                if scalar.value == 0x0A {
+                    out += "\\n"
+                } else if scalar.value == 0x0D {
+                    out += "\\r"
+                } else {
+                    out += String(format: "\\u%04x", scalar.value)
+                }
+            default:
+                out.append(Character(scalar))
+            }
+        }
+        out += "\""
+        return out
+    }
 }

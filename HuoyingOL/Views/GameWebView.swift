@@ -21,10 +21,13 @@ struct GameWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         
-        // 允许内联媒体播放。Ruffle 的 wasm 在 https 页面里编译，自定义 scheme 只负责把 wasm/SWF 字节送进来。
+        // 允许内联媒体播放。wasm 和 entry.swf 都在页面内存里交给 Ruffle，不走 ruffle://。
         configuration.allowsInlineMediaPlayback = true
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.setURLSchemeHandler(RuffleSchemeHandler(), forURLScheme: RuffleSchemeHandler.scheme)
+        let assetBridge = AirNativeFetchBridge()
+        context.coordinator.assetBridge = assetBridge
+        configuration.userContentController.add(assetBridge, name: AirNativeFetchBridge.handlerName)
         
         // 注入 qq-return.js 脚本 (在所有子frame中执行，用于处理跨iframe登录通信)
         injectQQReturnScript(into: configuration.userContentController)
@@ -34,6 +37,7 @@ struct GameWebView: UIViewRepresentable {
         
         // 创建独立的或者持久化的 WKWebView
         let webView = WKWebView(frame: .zero, configuration: configuration)
+        assetBridge.webView = webView
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         
@@ -351,7 +355,7 @@ struct GameWebView: UIViewRepresentable {
         contentController.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
     }
 
-    /// 在 Ruffle 启动前把包内 wasm 写进页面内存。不能走 ruffle://：真机上 fetch 和 script src 都到不了自定义 scheme。
+    /// 在 Ruffle 启动前把包内 wasm 写进页面内存。真机上 fetch 和 script src 都到不了 ruffle://，SWF 改走 airNativeFetch。
     private func injectRuffleScript(into contentController: WKUserContentController) {
         let wasmNames = [
             "878d548199cddef07035.wasm",
@@ -457,18 +461,95 @@ struct GameWebView: UIViewRepresentable {
               });
             };
           }
-          function shouldProxy(raw) {
+          function nativeAssetUrl(raw) {
             try {
+              if (!raw) return null;
               var abs = new URL(String(raw), location.href);
               if (abs.protocol !== "http:" && abs.protocol !== "https:") return null;
               if (abs.origin === location.origin) return null;
-              var path = abs.pathname;
-              var host = abs.hostname;
-              if (path.indexOf(".swf") < 0 && host !== "res.huoying.qq.com" && host !== "res.huoying.com") return null;
-              return "ruffle://proxy/?url=" + encodeURIComponent(abs.href);
+              var path = abs.pathname.toLowerCase();
+              var host = abs.hostname.toLowerCase();
+              var swf = path.indexOf(".swf") >= 0;
+              var cdn = host === "res.huoying.qq.com" || host === "res.huoying.com";
+              if (!swf && !cdn) return null;
+              return abs.href;
             } catch (e) {
               return null;
             }
+          }
+          window.__airFetchSeq = 0;
+          window.__airNativeSlots = {};
+          function bytesFromB64(b64) {
+            var bin = atob(b64);
+            var bytes = new Uint8Array(bin.length);
+            var step = 32768;
+            for (var i = 0; i < bin.length; i += step) {
+              var end = Math.min(i + step, bin.length);
+              for (var j = i; j < end; j++) bytes[j] = bin.charCodeAt(j) & 255;
+            }
+            return bytes;
+          }
+          window.__airNativePush = function (id, b64) {
+            var slot = window.__airNativeSlots[id];
+            if (slot && b64) slot.chunks.push(bytesFromB64(b64));
+          };
+          window.__airNativeFinish = function (id, status, mime, error) {
+            var slot = window.__airNativeSlots[id];
+            if (!slot) return;
+            delete window.__airNativeSlots[id];
+            if (error) {
+              if (String(slot.url).toLowerCase().indexOf(".swf") >= 0) airStatus("swf 失败 " + error, false);
+              slot.reject(new Error(error));
+              return;
+            }
+            var total = 0;
+            for (var i = 0; i < slot.chunks.length; i++) total += slot.chunks[i].length;
+            var bytes = new Uint8Array(total);
+            var offset = 0;
+            for (var k = 0; k < slot.chunks.length; k++) {
+              bytes.set(slot.chunks[k], offset);
+              offset += slot.chunks[k].length;
+            }
+            var type = mime || "application/octet-stream";
+            if (String(slot.url).toLowerCase().indexOf(".swf") >= 0) type = "application/x-shockwave-flash";
+            var code = status | 0;
+            if (code < 200 || code > 599) code = 200;
+            var response = new Response(bytes, {
+              status: code,
+              statusText: "OK",
+              headers: {
+                "Content-Type": type,
+                "Content-Length": String(bytes.byteLength),
+                "Access-Control-Allow-Origin": "*"
+              }
+            });
+            console.log("[air-ruffle] native " + code + " " + bytes.byteLength + " " + slot.url);
+            if (type.indexOf("shockwave") >= 0) airStatus("swf 已载入 " + bytes.byteLength + " bytes", true);
+            slot.resolve(response);
+          };
+          function nativeFetch(url) {
+            return new Promise(function (resolve, reject) {
+              var bridge = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.airNativeFetch;
+              if (!bridge) {
+                airStatus("swf 失败 airNativeFetch missing", false);
+                reject(new Error("airNativeFetch missing"));
+                return;
+              }
+              var id = "f" + (++window.__airFetchSeq);
+              var timer = setTimeout(function () {
+                if (!window.__airNativeSlots[id]) return;
+                delete window.__airNativeSlots[id];
+                airStatus("swf 失败 timeout", false);
+                reject(new Error("native fetch timeout"));
+              }, 90000);
+              window.__airNativeSlots[id] = {
+                url: url,
+                chunks: [],
+                resolve: function (response) { clearTimeout(timer); resolve(response); },
+                reject: function (error) { clearTimeout(timer); reject(error); }
+              };
+              bridge.postMessage({ id: id, url: url });
+            });
           }
           function wasmNameOf(raw) {
             var text = String(raw || "");
@@ -498,16 +579,51 @@ struct GameWebView: UIViewRepresentable {
             var raw = requestUrl(input);
             var wasmName = wasmNameOf(raw);
             if (wasmName && ready[wasmName]) return wasmResponse(wasmName);
-            var next = shouldProxy(raw);
-            if (!next) return origFetch(input, init);
-            return origFetch(next, init);
+            var asset = nativeAssetUrl(raw);
+            if (!asset) return origFetch(input, init);
+            if (asset.toLowerCase().indexOf(".swf") >= 0) airStatus("正在下载 swf…", false);
+            return nativeFetch(asset);
           };
+          globalThis.fetch = window.fetch;
           var origOpen = XMLHttpRequest.prototype.open;
+          var origSend = XMLHttpRequest.prototype.send;
           XMLHttpRequest.prototype.open = function (method, url) {
-            var args = Array.prototype.slice.call(arguments);
-            var next = shouldProxy(url);
-            if (next) args[1] = next;
-            return origOpen.apply(this, args);
+            this.__airAsset = nativeAssetUrl(url);
+            return origOpen.apply(this, arguments);
+          };
+          XMLHttpRequest.prototype.send = function (body) {
+            var asset = this.__airAsset;
+            if (!asset) return origSend.apply(this, arguments);
+            var xhr = this;
+            nativeFetch(asset).then(function (resp) {
+              return resp.arrayBuffer().then(function (buf) {
+                var text = "";
+                try { text = new TextDecoder().decode(buf); } catch (e) { text = ""; }
+                try {
+                  Object.defineProperty(xhr, "status", { configurable: true, get: function () { return resp.status; } });
+                  Object.defineProperty(xhr, "readyState", { configurable: true, get: function () { return 4; } });
+                  Object.defineProperty(xhr, "responseURL", { configurable: true, get: function () { return asset; } });
+                  Object.defineProperty(xhr, "responseText", { configurable: true, get: function () { return text; } });
+                  Object.defineProperty(xhr, "response", { configurable: true, get: function () {
+                    if (xhr.responseType === "arraybuffer") return buf;
+                    if (xhr.responseType === "blob") return new Blob([buf]);
+                    return text;
+                  } });
+                } catch (patchError) {
+                  console.warn("[air-ruffle] xhr response patch failed", patchError);
+                }
+                try { xhr.dispatchEvent(new Event("readystatechange")); } catch (e1) {}
+                try { xhr.dispatchEvent(new ProgressEvent("load")); } catch (e2) {}
+                try { xhr.dispatchEvent(new ProgressEvent("loadend")); } catch (e3) {}
+                if (typeof xhr.onreadystatechange === "function") xhr.onreadystatechange();
+                if (typeof xhr.onload === "function") xhr.onload();
+                if (typeof xhr.onloadend === "function") xhr.onloadend();
+              });
+            }).catch(function (error) {
+              console.error("[air-ruffle] xhr", asset, error);
+              try { xhr.dispatchEvent(new ProgressEvent("error")); } catch (e4) {}
+              if (typeof xhr.onerror === "function") xhr.onerror(error);
+            });
           };
           if (ready["878d548199cddef07035.wasm"] && ready["172de42e6619eac8f371.wasm"]) {
             airStatus("wasm 已就绪 " + ready["878d548199cddef07035.wasm"].length + " + " + ready["172de42e6619eac8f371.wasm"].length + " bytes", true);
@@ -546,6 +662,7 @@ struct GameWebView: UIViewRepresentable {
     
     class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var viewModel: GameViewModel
+        var assetBridge: AirNativeFetchBridge?
         private var progressObservation: NSKeyValueObservation?
         private var titleObservation: NSKeyValueObservation?
         private var urlObservation: NSKeyValueObservation?
