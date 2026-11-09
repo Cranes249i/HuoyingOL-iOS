@@ -21,12 +21,14 @@ struct GameWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         
-        // 允许内联媒体播放
+        // 允许内联媒体播放。Ruffle 的 wasm 在 https 页面里编译，自定义 scheme 只负责把 wasm/SWF 字节送进来。
         configuration.allowsInlineMediaPlayback = true
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.setURLSchemeHandler(RuffleSchemeHandler(), forURLScheme: RuffleSchemeHandler.scheme)
         
         // 注入 qq-return.js 脚本 (在所有子frame中执行，用于处理跨iframe登录通信)
         injectQQReturnScript(into: configuration.userContentController)
+        injectRuffleScript(into: configuration.userContentController)
         // 主框架铺满屏幕：viewport-fit=cover，并按视口缩放选区页 / 游戏舞台
         injectFullscreenScript(into: configuration.userContentController)
         
@@ -320,10 +322,16 @@ struct GameWebView: UIViewRepresentable {
           function allowEmbeddedClient() {
             var client = window.web;
             if (!client || !client.sys) return;
-            // 官方客户端只有 entry.swf。非 Chrome 且没有插件时，narutoweb.js 会改成「请点击安装」。
-            // 这里走和 Chrome 一样的分支：直接嵌入客户端，不再盖安装提示。
+            // 让 narutoweb.js 真正插入 object/embed，而不是换成「请点击安装」。
+            // Ruffle 的 polyfill 会接管这些节点并播放 entry.swf。
             if (!client.sys.chrome) client.sys.chrome = "120.0.0.0";
             client.sys.playerInstalled = true;
+            if (!document.getElementById("air-ruffle-fit")) {
+              var style = document.createElement("style");
+              style.id = "air-ruffle-fit";
+              style.textContent = "#resizeTarget, #resizeTarget ruffle-player, #resizeTarget ruffle-embed, #resizeTarget object, #resizeTarget embed { width:100% !important; height:100% !important; max-width:none !important; max-height:none !important; display:block; background:#000; }";
+              (document.head || document.documentElement).appendChild(style);
+            }
           }
           function fit() {
             installViewport();
@@ -341,6 +349,73 @@ struct GameWebView: UIViewRepresentable {
         })();
         """#
         contentController.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+    }
+
+    /// 在页面脚本之前放好 Ruffle：配置 publicPath，并把没有 CORS 的 SWF 请求改到 ruffle://proxy。
+    private func injectRuffleScript(into contentController: WKUserContentController) {
+        let bootstrap = #"""
+        (() => {
+          window.RufflePlayer = window.RufflePlayer || {};
+          window.RufflePlayer.config = Object.assign({}, window.RufflePlayer.config, {
+            publicPath: "ruffle://bundle/",
+            polyfills: true,
+            autoplay: "on",
+            unmuteOverlay: "hidden",
+            splashScreen: false,
+            letterbox: "off",
+            scale: "exactFit",
+            forceScale: true,
+            wmode: "opaque",
+            quality: "high",
+            warnOnUnsupportedContent: false,
+            openUrlMode: "allow",
+            allowNetworking: "all",
+            upgradeToHttps: true
+          });
+          if (location.hostname !== "game.huoying.qq.com") return;
+          function proxied(raw) {
+            try {
+              var abs = new URL(String(raw), location.href);
+              if (abs.protocol === "ruffle:") return null;
+              if (abs.protocol !== "http:" && abs.protocol !== "https:") return null;
+              if (abs.origin === location.origin) return null;
+              return "ruffle://proxy/?url=" + encodeURIComponent(abs.href);
+            } catch (e) {
+              return null;
+            }
+          }
+          var origFetch = window.fetch.bind(window);
+          window.fetch = function (input, init) {
+            var raw = typeof input === "string" ? input : (input && input.url) || "";
+            var next = proxied(raw);
+            if (!next) return origFetch(input, init);
+            return origFetch(next, init);
+          };
+          var origOpen = XMLHttpRequest.prototype.open;
+          XMLHttpRequest.prototype.open = function (method, url) {
+            var args = Array.prototype.slice.call(arguments);
+            var next = proxied(url);
+            if (next) args[1] = next;
+            return origOpen.apply(this, args);
+          };
+          setTimeout(function () {
+            if (window.RufflePlayer && typeof window.RufflePlayer.newest === "function") return;
+            var script = document.createElement("script");
+            script.src = "ruffle://bundle/ruffle.js";
+            var parent = document.head || document.documentElement;
+            if (parent) parent.appendChild(script);
+          }, 0);
+        })();
+        """#
+        contentController.addUserScript(WKUserScript(source: bootstrap, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+
+        // 直接注入 ruffle.js，保证在 narutoweb.js 创建 object/embed 之前完成 polyfill。
+        // 动态 script 只在注入失败时由上面的 setTimeout 补上。
+        let ruffleFile = Bundle.main.url(forResource: "ruffle", withExtension: "js", subdirectory: "Ruffle")
+            ?? Bundle.main.url(forResource: "ruffle", withExtension: "js")
+        if let ruffleFile = ruffleFile, let source = try? String(contentsOf: ruffleFile, encoding: .utf8), !source.isEmpty {
+            contentController.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
     }
     
     // MARK: - Coordinator

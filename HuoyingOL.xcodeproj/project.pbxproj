@@ -22,6 +22,8 @@
 		A10013 /* BackgroundKeepAlive.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10013; };
 		A10014 /* qq-return.js in Resources */ = {isa = PBXBuildFile; fileRef = B10014; };
 		A10015 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10015; };
+		A10020 /* Ruffle in Resources */ = {isa = PBXBuildFile; fileRef = B10020; };
+		A10021 /* RuffleSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10021; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -40,6 +42,8 @@
 		B10013 /* BackgroundKeepAlive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundKeepAlive.swift; sourceTree = "<group>"; };
 		B10014 /* qq-return.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "qq-return.js"; sourceTree = "<group>"; };
 		B10015 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B10020 /* Ruffle */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Ruffle; sourceTree = "<group>"; };
+		B10021 /* RuffleSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuffleSchemeHandler.swift; sourceTree = "<group>"; };
 		B10016 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B10099 /* HuoyingOL.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HuoyingOL.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -118,6 +122,7 @@
 			isa = PBXGroup;
 			children = (
 				B10010 /* QQLoginService.swift */,
+				B10021 /* RuffleSchemeHandler.swift */,
 				B10011 /* SpeedController.swift */,
 				B10012 /* AutoClickService.swift */,
 				B10013 /* BackgroundKeepAlive.swift */,
@@ -129,6 +134,7 @@
 			isa = PBXGroup;
 			children = (
 				B10014 /* qq-return.js */,
+				B10020 /* Ruffle */,
 				B10015 /* Assets.xcassets */,
 			);
 			path = Resources;
@@ -202,6 +208,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10014 /* qq-return.js in Resources */,
+				A10020 /* Ruffle in Resources */,
 				A10015 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -226,6 +233,7 @@
 				A10011 /* SpeedController.swift in Sources */,
 				A10012 /* AutoClickService.swift in Sources */,
 				A10013 /* BackgroundKeepAlive.swift in Sources */,
+				A10021 /* RuffleSchemeHandler.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
