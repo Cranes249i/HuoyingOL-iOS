@@ -5,13 +5,17 @@
  const login=["https://xui.ptlogin2.qq.com","https://ssl.ptlogin2.qq.com"];
  const type="huoying-air-qq-return-v1", origin=location.origin;
  if(origin===home&&/\/comm-htdocs\/login\/qccallback\.html$/i.test(location.pathname)){
+  // 手机版回调要求 s_url，官方 PC 登录不会带这个参数。锁住 isMobile，让页面自己走 parent.qqConnectCallback，且只调用一次。
   try{
-   const q=new URLSearchParams(location.search);
-   const payload={code:q.get("code")||"",state:q.get("state")||"",error:q.get("error")||"",error_description:q.get("error_description")||""};
-   const parentWin=window.parent;
-   if(parentWin&&parentWin!==window&&typeof parentWin.qqConnectCallback==="function")parentWin.qqConnectCallback(payload);
-   else if(typeof window.qqConnectCallback==="function")window.qqConnectCallback(payload);
-  }catch(e){}
+   Object.defineProperty(window,"isMobile",{configurable:false,writable:false,value:function(){return false;}});
+  }catch(e){
+   try{
+    const q=new URLSearchParams(location.search);
+    const payload={code:q.get("code")||"",state:q.get("state")||"",error:q.get("error")||"",error_description:q.get("error_description")||""};
+    const parentWin=window.parent;
+    if(parentWin&&parentWin!==window&&typeof parentWin.qqConnectCallback==="function")parentWin.qqConnectCallback(payload);
+   }catch(err){}
+  }
  }
  if(window.top===window&&origin===home){
   let modeTimer,activeMode;

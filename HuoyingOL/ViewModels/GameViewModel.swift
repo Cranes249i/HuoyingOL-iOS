@@ -121,6 +121,9 @@ class GameViewModel: ObservableObject {
     func startQQLogin(mode: GameAccount.LoginMode) {
         loginMode = mode
         account.settings.loginMode = mode
+        // 只在拉起登录页之前换成桌面 UA，让 graph/ptlogin 走页内 PC 登录。
+        // 进游戏的主框架导航会在决策回调里改回手机 UA。
+        webView?.customUserAgent = AppSettings.desktopWebUserAgent
         
         // 通过JavaScript调用qq-return.js的mode方法
         let modeString = mode.rawValue

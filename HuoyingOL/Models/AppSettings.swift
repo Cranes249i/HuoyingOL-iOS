@@ -28,6 +28,19 @@ class AppSettings: ObservableObject {
     static let qqConnectAppId = "102045649"
     /// 自定义UserAgent
     static let customUserAgent = "HuoyingAIR/0.2"
+    /// 选区页和游戏客户端用手机 UA。桌面 Safari 不是 Chrome，narutoweb.js 会弹出 Flash 安装提示。
+    static let mobileWebUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 \(customUserAgent)"
+    /// 只给 QQ 登录页（graph / ptlogin）。手机 UA 会进 style=35，回调缺少 s_url。
+    static let desktopWebUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15 \(customUserAgent)"
+
+    /// 主框架进游戏或回选区时用手机 UA；登录域用桌面 UA。
+    static func userAgent(forMainFrame url: URL) -> String {
+        let host = url.host?.lowercased() ?? ""
+        if host == "graph.qq.com" || host == "connect.qq.com" || host.contains("ptlogin2.qq.com") {
+            return desktopWebUserAgent
+        }
+        return mobileWebUserAgent
+    }
     /// 游戏主页URL
     static let gameHomeURL = "https://huoying.qq.com/server/website/"
     /// 游戏服务器URL

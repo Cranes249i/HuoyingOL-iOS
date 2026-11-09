@@ -46,10 +46,9 @@ struct GameWebView: UIViewRepresentable {
         webView.backgroundColor = .black
         webView.scrollView.backgroundColor = .black
         
-        // 桌面 Safari UA。iPhone 字样会让授权页走 style=35，一键登录跳出到 QQ，
-        // 再打开缺少 s_url 的 qccallback。桌面页的账号密码和扫码都留在这个 WebView 里。
-        let defaultUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15"
-        webView.customUserAgent = "\(defaultUA) \(AppSettings.customUserAgent)"
+        // 默认手机 UA，避免游戏页被 narutoweb.js 判成「未安装 Flash」。
+        // 点登录时再临时换成桌面 UA，见 GameViewModel.startQQLogin。
+        webView.customUserAgent = AppSettings.mobileWebUserAgent
         
         // 绑定引用到 ViewModel
         viewModel.webView = webView
@@ -88,13 +87,17 @@ struct GameWebView: UIViewRepresentable {
  const login=["https://xui.ptlogin2.qq.com","https://ssl.ptlogin2.qq.com"];
  const type="huoying-air-qq-return-v1", origin=location.origin;
  if(origin===home&&/\/comm-htdocs\/login\/qccallback\.html$/i.test(location.pathname)){
+  // 手机版回调要求 s_url，官方 PC 登录不会带这个参数。锁住 isMobile，让页面自己走 parent.qqConnectCallback，且只调用一次。
   try{
-   const q=new URLSearchParams(location.search);
-   const payload={code:q.get("code")||"",state:q.get("state")||"",error:q.get("error")||"",error_description:q.get("error_description")||""};
-   const parentWin=window.parent;
-   if(parentWin&&parentWin!==window&&typeof parentWin.qqConnectCallback==="function")parentWin.qqConnectCallback(payload);
-   else if(typeof window.qqConnectCallback==="function")window.qqConnectCallback(payload);
-  }catch(e){}
+   Object.defineProperty(window,"isMobile",{configurable:false,writable:false,value:function(){return false;}});
+  }catch(e){
+   try{
+    const q=new URLSearchParams(location.search);
+    const payload={code:q.get("code")||"",state:q.get("state")||"",error:q.get("error")||"",error_description:q.get("error_description")||""};
+    const parentWin=window.parent;
+    if(parentWin&&parentWin!==window&&typeof parentWin.qqConnectCallback==="function")parentWin.qqConnectCallback(payload);
+   }catch(err){}
+  }
  }
  if(window.top===window&&origin===home){
   let modeTimer,activeMode;
@@ -314,8 +317,17 @@ struct GameWebView: UIViewRepresentable {
             var used = wrap.offsetHeight * scale + (footer ? footer.offsetHeight * scale : 0);
             document.body.style.height = Math.max(window.innerHeight, used) + "px";
           }
+          function allowEmbeddedClient() {
+            var client = window.web;
+            if (!client || !client.sys) return;
+            // 官方客户端只有 entry.swf。非 Chrome 且没有插件时，narutoweb.js 会改成「请点击安装」。
+            // 这里走和 Chrome 一样的分支：直接嵌入客户端，不再盖安装提示。
+            if (!client.sys.chrome) client.sys.chrome = "120.0.0.0";
+            client.sys.playerInstalled = true;
+          }
           function fit() {
             installViewport();
+            if (location.hostname.indexOf("game.") === 0) allowEmbeddedClient();
             var stage = document.getElementById("resizeTarget");
             if (stage || location.hostname.indexOf("game.") === 0) fitGame(stage);
             else fitServer();
@@ -390,6 +402,11 @@ struct GameWebView: UIViewRepresentable {
                 return
             }
             
+            if alignMainFrameUserAgent(navigationAction, webView: webView) {
+                decisionHandler(.cancel)
+                return
+            }
+
             if QQLoginService.isAppCallback(url) {
                 viewModel.handleQQCallback(url: url)
                 decisionHandler(.cancel)
@@ -404,6 +421,21 @@ struct GameWebView: UIViewRepresentable {
             }
             
             decisionHandler(.allow)
+        }
+
+        /// 主框架离开登录域时改回手机 UA，并重发这次导航，避免游戏页继续带着桌面 Safari 标识。
+        private func alignMainFrameUserAgent(_ navigationAction: WKNavigationAction, webView: WKWebView) -> Bool {
+            guard navigationAction.targetFrame?.isMainFrame != false,
+                  let url = navigationAction.request.url,
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https" else {
+                return false
+            }
+            let desired = AppSettings.userAgent(forMainFrame: url)
+            guard webView.customUserAgent != desired else { return false }
+            webView.customUserAgent = desired
+            webView.load(navigationAction.request)
+            return true
         }
         
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
