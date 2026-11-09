@@ -24,6 +24,9 @@
 		A10015 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10015; };
 		A10020 /* Ruffle in Resources */ = {isa = PBXBuildFile; fileRef = B10020; };
 		A10021 /* RuffleSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10021; };
+		A10022 /* LzmaDec.c in Sources */ = {isa = PBXBuildFile; fileRef = B10022; };
+		A10023 /* AirLzmaDecode.c in Sources */ = {isa = PBXBuildFile; fileRef = B10023; };
+		A10024 /* AirLzma.m in Sources */ = {isa = PBXBuildFile; fileRef = B10024; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -44,6 +47,9 @@
 		B10015 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B10020 /* Ruffle */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Ruffle; sourceTree = "<group>"; };
 		B10021 /* RuffleSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuffleSchemeHandler.swift; sourceTree = "<group>"; };
+		B10022 /* LzmaDec.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = Lzma/LzmaDec.c; sourceTree = "<group>"; };
+		B10023 /* AirLzmaDecode.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = Lzma/AirLzmaDecode.c; sourceTree = "<group>"; };
+		B10024 /* AirLzma.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Lzma/AirLzma.m; sourceTree = "<group>"; };
 		B10016 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B10099 /* HuoyingOL.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HuoyingOL.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -123,6 +129,9 @@
 			children = (
 				B10010 /* QQLoginService.swift */,
 				B10021 /* RuffleSchemeHandler.swift */,
+				B10022 /* LzmaDec.c */,
+				B10023 /* AirLzmaDecode.c */,
+				B10024 /* AirLzma.m */,
 				B10011 /* SpeedController.swift */,
 				B10012 /* AutoClickService.swift */,
 				B10013 /* BackgroundKeepAlive.swift */,
@@ -234,6 +243,9 @@
 				A10012 /* AutoClickService.swift in Sources */,
 				A10013 /* BackgroundKeepAlive.swift in Sources */,
 				A10021 /* RuffleSchemeHandler.swift in Sources */,
+				A10022 /* LzmaDec.c in Sources */,
+				A10023 /* AirLzmaDecode.c in Sources */,
+				A10024 /* AirLzma.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -383,6 +395,7 @@
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = HuoyingOL/Services/Lzma/AirLzma-Bridging-Header.h;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -412,6 +425,7 @@
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = HuoyingOL/Services/Lzma/AirLzma-Bridging-Header.h;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};

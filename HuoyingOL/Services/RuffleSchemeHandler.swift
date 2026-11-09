@@ -179,6 +179,147 @@ final class RuffleSchemeHandler: NSObject, WKURLSchemeHandler {
 
 }
 
+/// resource.cfg 里每条资源带有自己的版本目录。LoginConfig.xml 不在 entry.swf 那一版，直接拼当前目录会得到 162 字节的 nginx 404。
+private enum AssetTagIndex {
+    static func parse(_ data: Data) -> [String: String] {
+        guard data.count > 16 else { return [:] }
+        let end = (Int(data[0]) << 24) | (Int(data[1]) << 16) | (Int(data[2]) << 8) | Int(data[3])
+        let reader = Reader(data: data, limit: min(max(end, 0), data.count))
+        reader.index = 9
+        _ = reader.value()
+        guard let first = reader.value() else { return [:] }
+        var map: [String: String] = [:]
+        func take(_ value: TagValue) {
+            guard case .object(let fields) = value,
+                  case .text(let url)? = fields["url"],
+                  case .text(let tag)? = fields["tag"],
+                  !url.isEmpty, tag.hasPrefix("Naruto") else { return }
+            map[url] = tag
+        }
+        take(first)
+        while reader.index < reader.limit {
+            let mark = data[reader.index]
+            if mark == 0x01 {
+                reader.index += 1
+                continue
+            }
+            if mark == 0x06 {
+                guard reader.value() != nil, reader.index < data.count, data[reader.index] == 0x0A, let obj = reader.value() else { break }
+                take(obj)
+                continue
+            }
+            if mark == 0x0A {
+                guard let obj = reader.value() else { break }
+                take(obj)
+                continue
+            }
+            break
+        }
+        return map
+    }
+
+    fileprivate enum TagValue {
+        case text(String)
+        case number(Int)
+        case empty
+        case object([String: TagValue])
+    }
+
+    fileprivate final class Reader {
+        let data: Data
+        let limit: Int
+        var index: Int
+        var strings: [String] = []
+        var traits: [[String]] = []
+
+        init(data: Data, limit: Int) {
+            self.data = data
+            self.limit = limit
+            self.index = 0
+        }
+
+        func value() -> TagValue? {
+            guard index < data.count else { return nil }
+            let mark = data[index]
+            index += 1
+            switch mark {
+            case 0x01, 0x02, 0x03:
+                return .empty
+            case 0x04:
+                guard let raw = u29() else { return nil }
+                var number = Int(raw)
+                if number & 0x10000000 != 0 { number -= 0x20000000 }
+                return .number(number)
+            case 0x06:
+                guard let text = string() else { return nil }
+                return .text(text)
+            case 0x0A:
+                return object()
+            default:
+                return nil
+            }
+        }
+
+        private func object() -> TagValue? {
+            guard let header = u29() else { return nil }
+            if header & 1 == 0 { return .empty }
+            let props: [String]
+            if header & 3 == 1 {
+                let traitIndex = Int(header >> 2)
+                guard traits.indices.contains(traitIndex) else { return nil }
+                props = traits[traitIndex]
+            } else {
+                let count = Int(header >> 4)
+                guard string() != nil else { return nil }
+                var names: [String] = []
+                for _ in 0..<count {
+                    guard let name = string() else { return nil }
+                    names.append(name)
+                }
+                traits.append(names)
+                props = names
+            }
+            var fields: [String: TagValue] = [:]
+            for name in props {
+                guard let item = value() else { return nil }
+                fields[name] = item
+            }
+            return .object(fields)
+        }
+
+        private func string() -> String? {
+            guard let header = u29() else { return nil }
+            if header & 1 == 0 {
+                let ref = Int(header >> 1)
+                guard strings.indices.contains(ref) else { return nil }
+                return strings[ref]
+            }
+            let length = Int(header >> 1)
+            guard length >= 0, index + length <= data.count else { return nil }
+            let text = length == 0 ? "" : String(data: data.subdata(in: index..<(index + length)), encoding: .utf8) ?? ""
+            index += length
+            strings.append(text)
+            return text
+        }
+
+        private func u29() -> UInt32? {
+            var value: UInt32 = 0
+            for shift in 0..<4 {
+                guard index < data.count else { return nil }
+                let byte = UInt32(data[index])
+                index += 1
+                if shift == 3 {
+                    value = (value << 8) | byte
+                    break
+                }
+                value = (value << 7) | (byte & 0x7F)
+                if byte & 0x80 == 0 { break }
+            }
+            return value
+        }
+    }
+}
+
 /// 页面里的 `window.fetch`（Ruffle 的 `__wbg_fetch` 调的就是它）不能跨域读 entry.swf。
 /// 真机上 `ruffle://` 也到不了 WKURLSchemeHandler，所以由这里用 URLSession 把字节送回 JS。
 final class AirNativeFetchBridge: NSObject, WKScriptMessageHandler {
@@ -195,6 +336,17 @@ final class AirNativeFetchBridge: NSObject, WKScriptMessageHandler {
         config.urlCache = nil
         return URLSession(configuration: config)
     }()
+    private let lookupSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 60
+        config.httpShouldSetCookies = false
+        config.urlCache = nil
+        return URLSession(configuration: config)
+    }()
+    private let workQueue = DispatchQueue(label: "air.asset-index")
+    private let indexLock = NSLock()
+    private var assetTags: [String: String] = [:]
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any] else { return }
@@ -204,32 +356,125 @@ final class AirNativeFetchBridge: NSObject, WKScriptMessageHandler {
             deliver(id: id, status: 0, mime: "", data: nil, error: "blocked url")
             return
         }
+        workQueue.async { [weak self] in
+            guard let self = self else { return }
+            if !url.path.lowercased().hasSuffix("resource.cfg") {
+                self.ensureIndex(near: url)
+            }
+            self.load(id: id, url: self.rewrite(url), allowRecover: true)
+        }
+    }
+
+    private func load(id: String, url: URL, allowRecover: Bool) {
+        guard Self.allows(url) else {
+            deliver(id: id, status: 0, mime: "", data: nil, error: "blocked url")
+            return
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("*/*", forHTTPHeaderField: "Accept")
         request.setValue(AppSettings.desktopWebUserAgent, forHTTPHeaderField: "User-Agent")
         let task = session.dataTask(with: request) { [weak self] data, response, error in
-            guard let self = self else { return }
-            if let error = error {
-                self.deliver(id: id, status: 0, mime: "", data: nil, error: error.localizedDescription)
-                return
+            self?.workQueue.async {
+                self?.finish(id: id, url: url, data: data, response: response, error: error, allowRecover: allowRecover)
             }
-            let http = response as? HTTPURLResponse
-            let status = http?.statusCode ?? 0
-            var mime = http?.mimeType ?? ""
-            if url.path.lowercased().contains(".swf") {
-                mime = "application/x-shockwave-flash"
-            } else if mime.isEmpty {
-                mime = Self.mime(for: url)
-            }
-            let bytes = data ?? Data()
-            if bytes.count > Self.maxBytes {
-                self.deliver(id: id, status: 0, mime: "", data: nil, error: "response too large")
-                return
-            }
-            self.deliver(id: id, status: status, mime: mime, data: bytes, error: nil)
         }
         task.resume()
+    }
+
+    private func finish(id: String, url: URL, data: Data?, response: URLResponse?, error: Error?, allowRecover: Bool) {
+        if let error = error {
+            deliver(id: id, status: 0, mime: "", data: nil, error: error.localizedDescription)
+            return
+        }
+        let http = response as? HTTPURLResponse
+        let status = http?.statusCode ?? 0
+        var mime = http?.mimeType ?? ""
+        if url.path.lowercased().contains(".swf") {
+            mime = "application/x-shockwave-flash"
+        } else if mime.isEmpty {
+            mime = Self.mime(for: url)
+        }
+        let bytes = data ?? Data()
+        if status == 200, url.path.lowercased().hasSuffix("resource.cfg") {
+            ingest(bytes)
+        }
+        if status >= 400, allowRecover {
+            ensureIndex(near: url)
+            let better = rewrite(url)
+            if better.absoluteString != url.absoluteString {
+                load(id: id, url: better, allowRecover: false)
+                return
+            }
+        }
+        if bytes.count > Self.maxBytes {
+            deliver(id: id, status: 0, mime: "", data: nil, error: "response too large")
+            return
+        }
+        deliver(id: id, status: status, mime: mime, data: bytes, error: nil)
+    }
+
+    private func ensureIndex(near url: URL) {
+        indexLock.lock()
+        let ready = !assetTags.isEmpty
+        indexLock.unlock()
+        guard !ready, let cfgURL = resourceCfgURL(near: url), let loaded = downloadSync(cfgURL), loaded.0 == 200 else { return }
+        ingest(loaded.1)
+    }
+
+    private func ingest(_ data: Data) {
+        guard let decoded = AirLzmaDecompressAlone(data), !decoded.isEmpty else { return }
+        let map = AssetTagIndex.parse(decoded)
+        guard !map.isEmpty else { return }
+        indexLock.lock()
+        assetTags = map
+        indexLock.unlock()
+    }
+
+    private func rewrite(_ url: URL) -> URL {
+        indexLock.lock()
+        let map = assetTags
+        indexLock.unlock()
+        guard !map.isEmpty else { return url }
+        let parts = url.path.split(separator: "/").map(String.init)
+        guard !parts.isEmpty else { return url }
+        for start in 0..<parts.count {
+            let suffix = parts[start...].joined(separator: "/")
+            guard let tag = map[suffix] else { continue }
+            if start == 1, parts[0] == tag { return url }
+            guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+            components.path = "/" + tag + "/" + suffix
+            return components.url ?? url
+        }
+        return url
+    }
+
+    private func resourceCfgURL(near url: URL) -> URL? {
+        guard let version = url.path.split(separator: "/").first, version.contains("Build") else { return nil }
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/" + version + "/resource.cfg"
+        components.query = nil
+        return components.url
+    }
+
+    private func downloadSync(_ url: URL) -> (Int, Data)? {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue(AppSettings.desktopWebUserAgent, forHTTPHeaderField: "User-Agent")
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: (Int, Data)?
+        let task = lookupSession.dataTask(with: request) { data, response, _ in
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            result = (status, data ?? Data())
+            semaphore.signal()
+        }
+        task.resume()
+        if semaphore.wait(timeout: .now() + 40) == .timedOut {
+            task.cancel()
+            return nil
+        }
+        return result
     }
 
     private func deliver(id: String, status: Int, mime: String, data: Data?, error: String?) {
