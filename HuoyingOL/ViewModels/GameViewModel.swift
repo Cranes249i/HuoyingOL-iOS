@@ -144,16 +144,16 @@ class GameViewModel: ObservableObject {
         }
 
         let literal = Self.jsQuoted(jumpURL.absoluteString)
-        let js = """
+        let js = #"""
         (function(){
-          var url = \(literal);
+          var url = \#(literal);
           if (window.airQqReturn && typeof window.airQqReturn.accept === 'function') {
             window.airQqReturn.accept(url);
             return;
           }
           if (/ptlogin2\.qq\.com$/.test(location.hostname)) location.replace(url);
         })();
-        """
+        """#
         webView?.evaluateJavaScript(js) { _, error in
             if let error = error {
                 print("❌ 传递QQ回调失败: \(error.localizedDescription)")

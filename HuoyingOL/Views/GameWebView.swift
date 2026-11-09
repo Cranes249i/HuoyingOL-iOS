@@ -79,7 +79,7 @@ struct GameWebView: UIViewRepresentable {
             scriptSource = content
         } else {
             // 与 Resources/qq-return.js 保持一致，Bundle 缺失时仍能登录
-            scriptSource = """
+            scriptSource = #"""
 // QQ 登录桥：把官网 iframe 登录和原生壳接上。
 // 密码登录要露出 style=35 里被隐藏的账号密码框；快捷登录调用 pt.doOneKey() 拉起手机 QQ。
 (() => {
@@ -247,7 +247,7 @@ struct GameWebView: UIViewRepresentable {
   }
  });
 })();
-            """
+"""#
         }
         
         let userScript = WKUserScript(
@@ -260,7 +260,7 @@ struct GameWebView: UIViewRepresentable {
 
     /// 让选区页和游戏舞台贴着物理屏幕，而不是停在安全区或 1020×600 的最小舞台里。
     private func injectFullscreenScript(into contentController: WKUserContentController) {
-        let source = """
+        let source = #"""
         (() => {
           if (window.top !== window) return;
           var host = location.hostname;
@@ -329,7 +329,7 @@ struct GameWebView: UIViewRepresentable {
           setInterval(fit, 700);
           fit();
         })();
-        """
+        """#
         contentController.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
     }
     
