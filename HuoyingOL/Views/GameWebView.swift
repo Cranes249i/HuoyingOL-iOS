@@ -400,7 +400,7 @@ struct GameWebView: UIViewRepresentable {
           }
           window.RufflePlayer = window.RufflePlayer || {};
           window.RufflePlayer.config = Object.assign({}, window.RufflePlayer.config, {
-            publicPath: "https://game.huoying.qq.com/ruffle-local/",
+            publicPath: "",
             polyfills: true,
             autoplay: "on",
             unmuteOverlay: "hidden",
@@ -470,9 +470,34 @@ struct GameWebView: UIViewRepresentable {
               return null;
             }
           }
+          function wasmNameOf(raw) {
+            var text = String(raw || "");
+            var query = text.indexOf("?");
+            if (query >= 0) text = text.slice(0, query);
+            var slash = text.lastIndexOf("/");
+            var base = slash >= 0 ? text.slice(slash + 1) : text;
+            for (var i = 0; i < wasmNames.length; i++) {
+              if (base === wasmNames[i]) return base;
+            }
+            return null;
+          }
+          function wasmResponse(name) {
+            var bytes = ready[name];
+            if (!bytes) return Promise.reject(new Error("wasm not ready " + name));
+            return Promise.resolve(new Response(bytes.slice(0), {
+              status: 200,
+              statusText: "OK",
+              headers: {
+                "Content-Type": "application/wasm",
+                "Content-Length": String(bytes.byteLength)
+              }
+            }));
+          }
           var origFetch = window.fetch.bind(window);
           window.fetch = function (input, init) {
             var raw = requestUrl(input);
+            var wasmName = wasmNameOf(raw);
+            if (wasmName && ready[wasmName]) return wasmResponse(wasmName);
             var next = shouldProxy(raw);
             if (!next) return origFetch(input, init);
             return origFetch(next, init);
