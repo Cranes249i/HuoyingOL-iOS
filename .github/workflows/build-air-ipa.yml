@@ -1,0 +1,82 @@
+name: Build AIR iOS IPA
+
+on:
+  push:
+    branches: [ air-ios ]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: ADT iOS target
+        default: ipa-test-interpreter
+        required: true
+      air_version:
+        description: AIR SDK version
+        default: 51.5.1.1
+        required: true
+
+env:
+  AIR_VERSION: ${{ github.event.inputs.air_version || '51.5.1.1' }}
+  ADT_TARGET: ${{ github.event.inputs.target || 'ipa-test-interpreter' }}
+
+jobs:
+  build:
+    name: Package IPA with ADT
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore AIR SDK cache
+        id: airsdk-cache
+        uses: actions/cache@v4
+        with:
+          path: airsdk.zip
+          key: airsdk-windows-${{ env.AIR_VERSION }}
+
+      - name: Download AIR SDK
+        if: steps.airsdk-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fL --retry 5 --retry-delay 5 -o airsdk.zip \
+            "https://airsdk.wxlift.com/api/versions/${AIR_VERSION}/sdks/AIRSDK_Windows.zip?license=accepted"
+          ls -l airsdk.zip
+
+      - name: Extract AIR SDK
+        run: |
+          mkdir -p airsdk
+          7z x -y -oairsdk airsdk.zip > /dev/null
+          ls airsdk
+          cat airsdk/air-sdk-description.xml || true
+
+      - name: Build IPA
+        env:
+          AIR_SDK: ${{ github.workspace }}/airsdk
+          P12_PASSWORD: huoying
+        run: |
+          export AIR_SDK="$(cygpath -u "$AIR_SDK")"
+          bash ./build-ipa.sh "$ADT_TARGET"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: HuoyingOL-AIR-ios-${{ env.ADT_TARGET }}
+          path: build/HuoyingOL.ipa
+          retention-days: 30
+
+      - name: Upload AIR SDK bundle (for local use)
+        if: steps.airsdk-cache.outputs.cache-hit != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIRSDK_Windows_${{ env.AIR_VERSION }}
+          path: airsdk.zip
+          retention-days: 3
+          compression-level: 0
