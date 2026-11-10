@@ -20,6 +20,15 @@ ADT_JAR="$AIR_SDK/lib/adt.jar"
 
 bash ./make-signing.sh cert
 
+if [[ -d src && "${SKIP_COMPILE:-0}" != 1 ]]; then
+  echo "== compiling src/MobileGame.as"
+  MXMLC="$AIR_SDK/bin/mxmlc"
+  [[ -f "$MXMLC.bat" && "${OSTYPE:-}" == msys* ]] && MXMLC="$MXMLC.bat"
+  "$MXMLC" +configname=air -swf-version=32 -debug=false -optimize=true \
+    -source-path+=src -output MobileGame.swf src/MobileGame.as
+  ls -l MobileGame.swf
+fi
+
 mkdir -p "$(dirname "$OUT")"
 rm -f "$OUT"
 

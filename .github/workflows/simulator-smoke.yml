@@ -5,6 +5,7 @@ on:
     branches: [ air-ios ]
     paths:
       - 'probe/**'
+      - 'src/**'
       - 'HuoyingOL-ios.xml'
       - 'MobileGame.swf'
       - '.github/workflows/simulator-smoke.yml'
@@ -52,6 +53,13 @@ jobs:
           $MXMLC +configname=air -swf-version=51 -debug=false -output probe/Probe2.swf probe/Probe2.as
           $MXMLC +configname=air -swf-version=51 -debug=false -output probe/IosProbe.swf probe/IosProbe.as
           ls -l probe/*.swf
+
+      - name: Compile launcher SWF from src
+        run: |
+          AIR_SDK="$PWD/airsdk"
+          "$AIR_SDK/bin/mxmlc" +configname=air -swf-version=32 -debug=false -optimize=true \
+            -source-path+=src -output MobileGame.swf src/MobileGame.as
+          ls -l MobileGame.swf MobileGame.orig.swf
 
       - name: Signing material
         run: bash ./make-signing.sh cert
