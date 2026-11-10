@@ -55,6 +55,8 @@ package
       
       private var loginFixLocation:String = "";
       
+      private var completedLocation:String = "";
+      
       private var loginFixTicks:uint = 0;
       
       private var trusted:Boolean = false;
@@ -328,6 +330,10 @@ package
             this.browser.addEventListener("complete",this.pageComplete);
             this.browser.addEventListener("error",function(param1:Event):void
             {
+               if(iosTest && webErrorAsScheme(String(Object(param1).text)))
+               {
+                  return;
+               }
                loginIssue("登录网页加载失败，可重启当前账号后重试",true);
             });
          }
@@ -524,15 +530,17 @@ package
       private function pageComplete(param1:Event) : void
       {
          var e:Event = param1;
-         this.record("登录网页 complete");
          try
          {
-            this.trusted = /^https:\/\/game\.huoying\.qq\.com\//.test(this.browser.location);
+            this.completedLocation = String(this.browser.location);
+            this.trusted = /^https:\/\/game\.huoying\.qq\.com\//.test(this.completedLocation);
          }
          catch(err:Error)
          {
+            completedLocation = "";
             trusted = false;
          }
+         this.record("登录网页 complete " + this.completedLocation.substr(0,80));
          this.inspect();
       }
       
@@ -670,6 +678,10 @@ package
                   i++;
                }
             }
+            if(Boolean(this.iosTest) && String(this.browser.location) != this.completedLocation)
+            {
+               return;
+            }
             this.browser.loadURL("javascript:(function(){var packet=" + this.sessionCapture(this.sessionProbe,this.microLogin) + ";if(packet)location.href=packet;})()");
          }
          catch(err:Error)
@@ -689,26 +701,67 @@ package
          {
             return;
          }
-         if(!/^https:\/\/huoying\.qq\.com\//.test(loc))
+         if(!/^https:\/\/huoying\.qq\.com\//.test(loc) || loc != this.completedLocation)
          {
             this.loginFixLocation = "";
             return;
          }
-         if(loc == this.loginFixLocation && ++this.loginFixTicks % 5 != 0)
-         {
-            return;
-         }
          if(loc != this.loginFixLocation)
          {
+            this.loginFixLocation = loc;
+            this.loginFixTicks = 0;
             this.record("iOS 登录框改走 PC 版入口");
          }
-         this.loginFixLocation = loc;
+         else
+         {
+            if(this.loginFixTicks >= 10)
+            {
+               return;
+            }
+            if(++this.loginFixTicks % 5 != 0)
+            {
+               return;
+            }
+         }
          this.browser.loadURL("javascript:" + this.pcLoginScript());
+      }
+      
+      private function webErrorAsScheme(param1:String) : Boolean
+      {
+         var text:String = param1;
+         var schemes:Array = ["huoyingair-session:","huoyingair-control:","wtloginmqq:"];
+         var i:int = 0;
+         var at:int = 0;
+         var url:String = null;
+         while(i < schemes.length)
+         {
+            at = text.indexOf(schemes[i]);
+            if(at >= 0)
+            {
+               url = text.substr(at).replace(/[\s\r\n]+$/,"");
+               if(i == 0)
+               {
+                  this.record("iOS 会话包经错误事件接收 " + url.length);
+                  this.acceptSession(url);
+               }
+               else if(i == 1)
+               {
+                  this.control(url);
+               }
+               else
+               {
+                  this.report("iOS 不支持调起手机 QQ，请在登录框点「密码登录」");
+               }
+               return true;
+            }
+            i++;
+         }
+         return false;
       }
       
       private function pcLoginScript() : String
       {
-         return "(function(){if(window.__airPcLogin)return;window.__airPcLogin=1;" + "var graph='https://graph.qq.com',seen=0,start=Date.now(),lastClick=0,clicks=0;" + "function fix(){var frames=document.querySelectorAll('iframe'),n=0;" + "for(var i=0;i<frames.length;i++){var f=frames[i],u;" + "try{u=new URL(f.getAttribute('src')||'',location.href);}catch(e){continue;}" + "if(u.origin!==graph)continue;n++;" + "if(f.getAttribute('data-air-pc'))continue;f.setAttribute('data-air-pc','1');" + "if(u.pathname==='/oauth2.0/authorize'||(u.pathname==='/oauth2.0/show'&&u.searchParams.get('display')!=='pc')){" + "u.pathname='/oauth2.0/show';u.searchParams.set('which','Login');u.searchParams.set('display','pc');f.src=u.href;}}" + "return n;}" + "setInterval(function(){var n=fix();if(n){seen=1;return;}" + "if(seen||clicks>=3||Date.now()-start>60000)return;" + "var un=document.getElementById('unlogin'),btn=document.getElementById('dologin');" + "if(un&&btn&&un.offsetParent!==null&&Date.now()-start>1500&&Date.now()-lastClick>2500){lastClick=Date.now();clicks++;btn.click();}" + "},300);})()";
+         return "(function(){if(window.__airPcLogin)return;window.__airPcLogin=1;" + "var graph='https://graph.qq.com',seen=0,start=Date.now(),lastClick=0,clicks=0;" + "function scan(doc,acc){var list=doc.querySelectorAll('iframe');for(var i=0;i<list.length;i++){var f=list[i];acc.push(f);try{var d=f.contentDocument;if(d&&d.querySelectorAll)scan(d,acc);}catch(e){}}return acc;}" + "function fix(){var frames=scan(document,[]),n=0;" + "for(var i=0;i<frames.length;i++){var f=frames[i],u;" + "try{u=new URL(f.getAttribute('src')||'',location.href);}catch(e){continue;}" + "if(u.origin!==graph)continue;n++;" + "if(f.getAttribute('data-air-pc'))continue;f.setAttribute('data-air-pc','1');" + "if(u.pathname==='/oauth2.0/authorize'||(u.pathname==='/oauth2.0/show'&&u.searchParams.get('display')!=='pc')){" + "u.pathname='/oauth2.0/show';u.searchParams.set('which','Login');u.searchParams.set('display','pc');f.src=u.href;}}" + "return n;}" + "setInterval(function(){var n=fix();if(n){seen=1;return;}" + "if(seen||clicks>=3||Date.now()-start>60000)return;" + "var un=document.getElementById('unlogin'),btn=document.getElementById('dologin');" + "if(un&&btn&&un.offsetParent!==null&&Date.now()-start>1500&&Date.now()-lastClick>2500){lastClick=Date.now();clicks++;btn.click();}" + "},300);})()";
       }
       
       private function sessionCapture(param1:String, param2:Boolean) : String

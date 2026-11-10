@@ -104,10 +104,12 @@ jobs:
           xcrun simctl terminate "$UDID" local.huoying.probe || true
 
           xcrun simctl launch "$UDID" local.huoying.airgame
-          sleep 20
-          xcrun simctl io "$UDID" screenshot sim/main-20s.png
+          sleep 12
+          xcrun simctl io "$UDID" screenshot sim/main-12s.png
+          sleep 18
+          xcrun simctl io "$UDID" screenshot sim/main-30s.png
           sleep 30
-          xcrun simctl io "$UDID" screenshot sim/main-50s.png
+          xcrun simctl io "$UDID" screenshot sim/main-60s.png
           CONT2=$(xcrun simctl get_app_container "$UDID" local.huoying.airgame data || true)
           echo "main container: $CONT2"
           find "$CONT2" -name 'air-diagnostics-*.jsonl' -print -exec cat {} \; -exec cp {} sim/ \; || true
