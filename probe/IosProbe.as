@@ -136,21 +136,20 @@ package
          web.viewPort = new Rectangle(0, int(stage.stageHeight * 0.3), stage.stageWidth, int(stage.stageHeight * 0.7));
          // Same frame-rewrite script as the launcher (MobileGame.pcLoginScript), kept in sync by hand.
          var fixJs:String = "(function(){if(window.__airPcLogin)return;window.__airPcLogin=1;" +
-            "var graph='https://graph.qq.com',seen=0,start=Date.now(),lastClick=0,clicks=0;" +
+            "var graph='https://graph.qq.com',seen=0,noted={};" +
+            "function note(t){if(noted[t])return;noted[t]=1;try{location.href='huoyingair-note:'+encodeURIComponent(t);}catch(e){}}" +
             "function scan(doc,acc){var list=doc.querySelectorAll('iframe');for(var i=0;i<list.length;i++){var f=list[i];acc.push(f);try{var d=f.contentDocument;if(d&&d.querySelectorAll)scan(d,acc);}catch(e){}}return acc;}" +
-            "function fix(){var frames=scan(document,[]),n=0;" +
+            "function fix(){var frames=scan(document,[]);" +
             "for(var i=0;i<frames.length;i++){var f=frames[i],u;" +
             "try{u=new URL(f.getAttribute('src')||'',location.href);}catch(e){continue;}" +
-            "if(u.origin!==graph)continue;n++;" +
+            "if(u.origin===graph){seen=1;" +
             "if(f.getAttribute('data-air-pc'))continue;f.setAttribute('data-air-pc','1');" +
             "if(u.pathname==='/oauth2.0/authorize'||(u.pathname==='/oauth2.0/show'&&u.searchParams.get('display')!=='pc')){" +
-            "u.pathname='/oauth2.0/show';u.searchParams.set('which','Login');u.searchParams.set('display','pc');f.src=u.href;}}" +
-            "return n;}" +
-            "setInterval(function(){var n=fix();if(n){seen=1;return;}" +
-            "if(seen||clicks>=3||Date.now()-start>60000)return;" +
-            "var un=document.getElementById('unlogin'),btn=document.getElementById('dologin');" +
-            "if(un&&btn&&un.offsetParent!==null&&Date.now()-start>1500&&Date.now()-lastClick>2500){lastClick=Date.now();clicks++;btn.click();}" +
-            "},300);})()";
+            "u.pathname='/oauth2.0/show';u.searchParams.set('which','Login');u.searchParams.set('display','pc');f.src=u.href;}" +
+            "note('graph frame rewritten to pc show');}" +
+            "else if(u.hostname==='xui.ptlogin2.qq.com'&&u.searchParams.get('appid')==='21000501'){note('plain ptlogin box (appid 21000501) detected');}}}" +
+            "setInterval(fix,300);" +
+            "setTimeout(function(){var un=document.getElementById('unlogin');if(!seen&&un&&un.offsetParent!==null)note('no graph frame after 15s, user must tap login');},15000);})()";
          // Reporter: enumerate iframes (src attribute, size, same-origin current href) and hand the JSON back via a custom scheme.
          var reportJs:String = "(function(){var out=[];function scan(doc,depth){var list=doc.querySelectorAll('iframe');for(var i=0;i<list.length;i++){var f=list[i],r=f.getBoundingClientRect(),cur='';" +
             "try{cur=f.contentWindow.location.href;}catch(e){cur='(x-origin)';}" +
@@ -197,6 +196,14 @@ package
          web.addEventListener(ErrorEvent.ERROR, function(ev:ErrorEvent):void
          {
             var text:String = String(ev.text);
+            var noteAt:int = text.indexOf("huoyingair-note:");
+            if(noteAt >= 0)
+            {
+               var noteText:String = "";
+               try { noteText = decodeURIComponent(text.substr(noteAt + "huoyingair-note:".length)); } catch(err2:Error) { noteText = text.substr(noteAt, 200); }
+               say("T5 note " + noteText);
+               return;
+            }
             var at:int = text.indexOf("probe-scheme:");
             if(at >= 0)
             {

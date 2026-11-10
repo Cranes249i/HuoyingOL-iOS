@@ -729,7 +729,7 @@ package
       private function webErrorAsScheme(param1:String) : Boolean
       {
          var text:String = param1;
-         var schemes:Array = ["huoyingair-session:","huoyingair-control:","wtloginmqq:"];
+         var schemes:Array = ["huoyingair-session:","huoyingair-control:","wtloginmqq:","huoyingair-note:"];
          var i:int = 0;
          var at:int = 0;
          var url:String = null;
@@ -748,9 +748,13 @@ package
                {
                   this.control(url);
                }
-               else
+               else if(i == 2)
                {
                   this.report("iOS 不支持调起手机 QQ，请在登录框点「密码登录」");
+               }
+               else
+               {
+                  this.webNote(url);
                }
                return true;
             }
@@ -759,9 +763,34 @@ package
          return false;
       }
       
+      private function webNote(param1:String) : void
+      {
+         var text:String = "";
+         try
+         {
+            text = decodeURIComponent(param1.substr("huoyingair-note:".length));
+         }
+         catch(err:Error)
+         {
+            return;
+         }
+         text = text.replace(/[\r\n]+/g," ").substr(0,80);
+         if(text.length > 0)
+         {
+            this.report(text);
+         }
+      }
+      
       private function pcLoginScript() : String
       {
-         return "(function(){if(window.__airPcLogin)return;window.__airPcLogin=1;" + "var graph='https://graph.qq.com',seen=0,start=Date.now(),lastClick=0,clicks=0;" + "function scan(doc,acc){var list=doc.querySelectorAll('iframe');for(var i=0;i<list.length;i++){var f=list[i];acc.push(f);try{var d=f.contentDocument;if(d&&d.querySelectorAll)scan(d,acc);}catch(e){}}return acc;}" + "function fix(){var frames=scan(document,[]),n=0;" + "for(var i=0;i<frames.length;i++){var f=frames[i],u;" + "try{u=new URL(f.getAttribute('src')||'',location.href);}catch(e){continue;}" + "if(u.origin!==graph)continue;n++;" + "if(f.getAttribute('data-air-pc'))continue;f.setAttribute('data-air-pc','1');" + "if(u.pathname==='/oauth2.0/authorize'||(u.pathname==='/oauth2.0/show'&&u.searchParams.get('display')!=='pc')){" + "u.pathname='/oauth2.0/show';u.searchParams.set('which','Login');u.searchParams.set('display','pc');f.src=u.href;}}" + "return n;}" + "setInterval(function(){var n=fix();if(n){seen=1;return;}" + "if(seen||clicks>=3||Date.now()-start>60000)return;" + "var un=document.getElementById('unlogin'),btn=document.getElementById('dologin');" + "if(un&&btn&&un.offsetParent!==null&&Date.now()-start>1500&&Date.now()-lastClick>2500){lastClick=Date.now();clicks++;btn.click();}" + "},300);})()";
+         // The site (qqconn.js) always logs in through QQ Connect: LoginManager opens a graph.qq.com/oauth2.0/authorize
+         // iframe, which for an iPhone UA becomes the mobile one-key page (needs the QQ app). Rewriting the frame to
+         // /oauth2.0/show?display=pc yields the PC authorize page with the account/password login embedded; the OAuth
+         // code still lands on qc_redirect.html, so the site sets openid/access_token exactly as on the Android build.
+         // The page itself is never clicked: a click on #dologin before LoginManager.init(QC) opens the plain ptlogin
+         // (appid 21000501) box, which logs the user in without QQ Connect tokens and the game page never captures a
+         // session. Status hints go back through the huoyingair-note: scheme (delivered as an error event on iOS).
+         return "(function(){if(window.__airPcLogin)return;window.__airPcLogin=1;" + "var graph='https://graph.qq.com',seen=0,noted={};" + "function note(t){if(noted[t])return;noted[t]=1;try{location.href='huoyingair-note:'+encodeURIComponent(t);}catch(e){}}" + "function scan(doc,acc){var list=doc.querySelectorAll('iframe');for(var i=0;i<list.length;i++){var f=list[i];acc.push(f);try{var d=f.contentDocument;if(d&&d.querySelectorAll)scan(d,acc);}catch(e){}}return acc;}" + "function fix(){var frames=scan(document,[]);" + "for(var i=0;i<frames.length;i++){var f=frames[i],u;" + "try{u=new URL(f.getAttribute('src')||'',location.href);}catch(e){continue;}" + "if(u.origin===graph){seen=1;" + "if(f.getAttribute('data-air-pc'))continue;f.setAttribute('data-air-pc','1');" + "if(u.pathname==='/oauth2.0/authorize'||(u.pathname==='/oauth2.0/show'&&u.searchParams.get('display')!=='pc')){" + "u.pathname='/oauth2.0/show';u.searchParams.set('which','Login');u.searchParams.set('display','pc');f.src=u.href;}" + "note('\\u767b\\u5f55\\u6846\\u5df2\\u6362\\u6210\\u7535\\u8111\\u7248\\uff1a\\u70b9\\u300c\\u5bc6\\u7801\\u767b\\u5f55\\u300d\\u8f93\\u5165 QQ \\u8d26\\u53f7\\u5bc6\\u7801\\uff0c\\u767b\\u5f55\\u540e\\u70b9\\u300c\\u6388\\u6743\\u300d');}" + "else if(u.hostname==='xui.ptlogin2.qq.com'&&u.searchParams.get('appid')==='21000501'){" + "note('\\u8fd9\\u4e2a\\u767b\\u5f55\\u6846\\u4e0d\\u80fd\\u8fdb\\u6e38\\u620f\\uff0c\\u8bf7\\u5173\\u95ed\\u5b83\\uff0c\\u7b49\\u9875\\u9762\\u81ea\\u52a8\\u5f39\\u51fa\\u6216\\u91cd\\u65b0\\u70b9\\u300c\\u767b\\u5f55\\u300d');}}}" + "setInterval(fix,300);" + "setTimeout(function(){var un=document.getElementById('unlogin');if(!seen&&un&&un.offsetParent!==null)note('\\u767b\\u5f55\\u6846\\u6ca1\\u6709\\u81ea\\u52a8\\u5f39\\u51fa\\u65f6\\uff0c\\u8bf7\\u70b9\\u9875\\u9762\\u53f3\\u4e0a\\u89d2\\u7684\\u300c\\u767b\\u5f55\\u300d');},15000);})()";
       }
       
       private function sessionCapture(param1:String, param2:Boolean) : String
@@ -795,6 +824,12 @@ package
          {
             param1.preventDefault();
             this.control(_loc2_);
+            return;
+         }
+         if(_loc2_.indexOf("huoyingair-note:") == 0)
+         {
+            param1.preventDefault();
+            this.webNote(_loc2_);
             return;
          }
          if(_loc2_.indexOf("huoyingair-session:") != 0)
