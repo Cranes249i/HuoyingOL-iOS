@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<application xmlns="http://ns.adobe.com/air/application/51.5">
+  <id>local.huoying.probe</id>
+  <versionNumber>1.0.0</versionNumber>
+  <filename>IosProbe</filename>
+  <name>IosProbe</name>
+  <initialWindow>
+    <content>IosProbe.swf</content>
+    <visible>true</visible>
+    <aspectRatio>landscape</aspectRatio>
+    <autoOrients>false</autoOrients>
+    <fullScreen>true</fullScreen>
+    <renderMode>cpu</renderMode>
+    <requestedDisplayResolution>high</requestedDisplayResolution>
+  </initialWindow>
+  <supportedProfiles>mobileDevice</supportedProfiles>
+  <iPhone>
+    <InfoAdditions><![CDATA[
+      <key>UIDeviceFamily</key>
+      <array>
+        <string>1</string>
+        <string>2</string>
+      </array>
+      <key>NSAppTransportSecurity</key>
+      <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+        <key>NSAllowsArbitraryLoadsInWebContent</key>
+        <true/>
+      </dict>
+    ]]></InfoAdditions>
+    <requestedDisplayResolution>high</requestedDisplayResolution>
+  </iPhone>
+</application>
