@@ -130,18 +130,40 @@ package
       private function testWebView():void
       {
          var jsSent:Boolean = false;
+         var reports:int = 0;
          web = new StageWebView(true);
          web.stage = stage;
-         web.viewPort = new Rectangle(0, int(stage.stageHeight / 2), stage.stageWidth, int(stage.stageHeight / 2));
+         web.viewPort = new Rectangle(0, int(stage.stageHeight * 0.3), stage.stageWidth, int(stage.stageHeight * 0.7));
+         // Same frame-rewrite script as the launcher (MobileGame.pcLoginScript), kept in sync by hand.
+         var fixJs:String = "(function(){if(window.__airPcLogin)return;window.__airPcLogin=1;" +
+            "var graph='https://graph.qq.com',seen=0,start=Date.now(),lastClick=0,clicks=0;" +
+            "function scan(doc,acc){var list=doc.querySelectorAll('iframe');for(var i=0;i<list.length;i++){var f=list[i];acc.push(f);try{var d=f.contentDocument;if(d&&d.querySelectorAll)scan(d,acc);}catch(e){}}return acc;}" +
+            "function fix(){var frames=scan(document,[]),n=0;" +
+            "for(var i=0;i<frames.length;i++){var f=frames[i],u;" +
+            "try{u=new URL(f.getAttribute('src')||'',location.href);}catch(e){continue;}" +
+            "if(u.origin!==graph)continue;n++;" +
+            "if(f.getAttribute('data-air-pc'))continue;f.setAttribute('data-air-pc','1');" +
+            "if(u.pathname==='/oauth2.0/authorize'||(u.pathname==='/oauth2.0/show'&&u.searchParams.get('display')!=='pc')){" +
+            "u.pathname='/oauth2.0/show';u.searchParams.set('which','Login');u.searchParams.set('display','pc');f.src=u.href;}}" +
+            "return n;}" +
+            "setInterval(function(){var n=fix();if(n){seen=1;return;}" +
+            "if(seen||clicks>=3||Date.now()-start>60000)return;" +
+            "var un=document.getElementById('unlogin'),btn=document.getElementById('dologin');" +
+            "if(un&&btn&&un.offsetParent!==null&&Date.now()-start>1500&&Date.now()-lastClick>2500){lastClick=Date.now();clicks++;btn.click();}" +
+            "},300);})()";
+         // Reporter: enumerate iframes (src attribute, size, same-origin current href) and hand the JSON back via a custom scheme.
+         var reportJs:String = "(function(){var out=[];function scan(doc,depth){var list=doc.querySelectorAll('iframe');for(var i=0;i<list.length;i++){var f=list[i],r=f.getBoundingClientRect(),cur='';" +
+            "try{cur=f.contentWindow.location.href;}catch(e){cur='(x-origin)';}" +
+            "out.push({d:depth,src:String(f.getAttribute('src')||'').substr(0,160),cur:String(cur).substr(0,160),w:Math.round(r.width),h:Math.round(r.height),pc:f.getAttribute('data-air-pc')||''});" +
+            "try{var cd=f.contentDocument;if(cd)scan(cd,depth+1);}catch(e){}}}scan(document,0);" +
+            "var un=document.getElementById('unlogin');location.href='probe-scheme:'+encodeURIComponent(JSON.stringify({t:document.title,un:un?un.offsetParent!==null:null,f:out}));})()";
          web.addEventListener(LocationChangeEvent.LOCATION_CHANGING, function(ev:LocationChangeEvent):void
          {
             var loc:String = ev.location;
             if(loc.indexOf("probe-scheme:") == 0)
             {
                ev.preventDefault();
-               var data:Object = null;
-               try { data = JSON.parse(decodeURIComponent(loc.substr("probe-scheme:".length))); } catch(err:Error) {}
-               say("T3 custom scheme intercepted len=" + loc.length + (data ? " title=" + data.t + " anchors=" + data.n + " ua=" + data.ua + " pad=" + String(data.p).length : " (json parse failed)") + " => PASS");
+               say("T3 custom scheme intercepted via LOCATION_CHANGING len=" + loc.length);
                return;
             }
             if(loc.indexOf("wtloginmqq:") == 0 || loc.indexOf("mqq") == 0)
@@ -150,29 +172,41 @@ package
                say("T3b qq scheme intercepted " + loc.substr(0, 60));
                return;
             }
-            say("locationChanging " + loc.substr(0, 90));
+            say("locationChanging " + loc.substr(0, 300));
          });
          web.addEventListener(LocationChangeEvent.LOCATION_CHANGE, function(ev:LocationChangeEvent):void
          {
-            say("locationChange " + ev.location.substr(0, 90));
+            say("locationChange " + ev.location.substr(0, 120));
          });
          web.addEventListener(Event.COMPLETE, function(ev:Event):void
          {
             say("T4 web complete " + String(web.location).substr(0, 90) + (String(web.location).indexOf("huoying.qq.com") >= 0 ? " => PASS" : ""));
             if(jsSent) return;
             jsSent = true;
-            var pad:String = "";
-            while(pad.length < 4000) pad += "0123456789";
-            var js:String = "(function(){var d={t:document.title,n:document.querySelectorAll('a').length,ua:navigator.userAgent,p:'" + pad + "'};" +
-               "document.title='probe-js-ran';location.href='probe-scheme:'+encodeURIComponent(JSON.stringify(d));})()";
-            web.loadURL("javascript:" + js);
-            say("T2 javascript: url sent (" + js.length + " chars)");
-            setTimeout(function():void
+            setTimeout(function():void { say("T5 report before fix"); web.loadURL("javascript:" + reportJs); }, 1500);
+            setTimeout(function():void { say("T5 applying frame fix"); web.loadURL("javascript:" + fixJs); }, 3000);
+            var later:Function = function():void
             {
-               say("T2/T3 check after 5s: location=" + String(web.location).substr(0, 60) + " title=" + web.title + (web.title == "probe-js-ran" ? " => JS RAN: PASS" : " => js not observed"));
-            }, 5000);
+               if(++reports > 6) return;
+               say("T5 report #" + reports + " location=" + String(web.location).substr(0, 60));
+               web.loadURL("javascript:" + reportJs);
+               setTimeout(later, 6000);
+            };
+            setTimeout(later, 6000);
          });
-         web.addEventListener(ErrorEvent.ERROR, function(ev:ErrorEvent):void { say("T4 web error " + ev.text + " => FAIL"); });
+         web.addEventListener(ErrorEvent.ERROR, function(ev:ErrorEvent):void
+         {
+            var text:String = String(ev.text);
+            var at:int = text.indexOf("probe-scheme:");
+            if(at >= 0)
+            {
+               var json:String = "";
+               try { json = decodeURIComponent(text.substr(at + "probe-scheme:".length)); } catch(err:Error) { json = "(decode failed) " + text.substr(at, 200); }
+               say("T5 frames " + json.substr(0, 1500));
+               return;
+            }
+            say("T4 web error " + text.substr(0, 300));
+         });
          say("T4 loading https://huoying.qq.com/server/website/");
          web.loadURL("https://huoying.qq.com/server/website/");
       }
