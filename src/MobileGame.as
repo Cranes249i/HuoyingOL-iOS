@@ -59,6 +59,18 @@ package
       
       private var loginFixTicks:uint = 0;
       
+      private var navBar:Sprite;
+      
+      private var qcState:String = "";
+      
+      private var qcAppId:String = "";
+      
+      private var qcRedirect:String = "";
+      
+      private var pendingQcCode:String = "";
+      
+      private var qcHandoffTime:Number = 0;
+      
       private var trusted:Boolean = false;
       
       private var started:Boolean = false;
@@ -167,6 +179,7 @@ package
                   openLogin();
                }
             });
+            this.buildNav();
          }
          this.nativeApp.addEventListener(Event.ACTIVATE,function(param1:Event):void
          {
@@ -244,8 +257,9 @@ package
          }
          var _loc2_:int = Math.min(stage.stageHeight - 1,Math.max(38,int(stage.stageHeight * 0.11)));
          var _loc3_:int = int(stage.stageWidth * 0.06);
+         var navWidth:int = this.layoutNav(_loc2_,_loc3_);
          this.status.x = _loc3_;
-         this.status.width = stage.stageWidth - 2 * _loc3_;
+         this.status.width = Math.max(80,stage.stageWidth - 2 * _loc3_ - navWidth);
          this.status.height = _loc2_ - 3;
          this.status.defaultTextFormat = new TextFormat("_sans",Math.max(15,int(_loc2_ * 0.34)),16777215);
          if(Boolean(this.status.length))
@@ -254,7 +268,121 @@ package
          }
          if(Boolean(this.browser) && !this.started)
          {
-            this.browser.viewPort = new Rectangle(_loc3_,_loc2_,this.status.width,stage.stageHeight - _loc2_);
+            this.browser.viewPort = new Rectangle(_loc3_,_loc2_,stage.stageWidth - 2 * _loc3_,stage.stageHeight - _loc2_);
+         }
+      }
+      
+      private function buildNav() : void
+      {
+         var labels:Array = ["后退","前进","刷新","选区"];
+         var i:int = 0;
+         var btn:Sprite = null;
+         var label:TextField = null;
+         if(Boolean(this.navBar))
+         {
+            return;
+         }
+         this.navBar = new Sprite();
+         while(i < labels.length)
+         {
+            btn = new Sprite();
+            btn.name = "nav" + i;
+            btn.buttonMode = true;
+            btn.mouseChildren = false;
+            label = new TextField();
+            label.name = "label";
+            label.selectable = false;
+            label.mouseEnabled = false;
+            label.text = labels[i];
+            btn.addChild(label);
+            btn.addEventListener(MouseEvent.CLICK,this.navClick);
+            this.navBar.addChild(btn);
+            i++;
+         }
+         addChild(this.navBar);
+      }
+      
+      private function layoutNav(stripHeight:int, margin:int) : int
+      {
+         var i:int = 0;
+         var btn:Sprite = null;
+         var label:TextField = null;
+         var total:int = 0;
+         var h:int = Math.max(28,stripHeight - 8);
+         var w:int = int(h * 1.8);
+         var gap:int = 6;
+         if(!this.navBar)
+         {
+            return 0;
+         }
+         this.navBar.visible = Boolean(this.iosTest) && !this.started && Boolean(this.browser);
+         while(i < this.navBar.numChildren)
+         {
+            btn = this.navBar.getChildAt(i) as Sprite;
+            btn.x = i * (w + gap);
+            btn.y = 0;
+            btn.graphics.clear();
+            btn.graphics.beginFill(0x2E6CDF,0.95);
+            btn.graphics.drawRoundRect(0,0,w,h,10,10);
+            btn.graphics.endFill();
+            label = btn.getChildByName("label") as TextField;
+            label.width = w;
+            label.height = h;
+            label.defaultTextFormat = new TextFormat("_sans",Math.max(13,int(h * 0.42)),16777215,true,null,null,null,null,"center");
+            label.setTextFormat(label.defaultTextFormat);
+            label.y = Math.max(0,int((h - label.textHeight) / 2) - 2);
+            i++;
+         }
+         total = this.navBar.numChildren * w + (this.navBar.numChildren - 1) * gap;
+         this.navBar.x = stage.stageWidth - margin - total;
+         this.navBar.y = int((stripHeight - h) / 2);
+         return total + 10;
+      }
+      
+      private function navClick(param1:MouseEvent) : void
+      {
+         var index:int = int(String(param1.currentTarget.name).substr(3));
+         if(!this.browser || Boolean(this.started))
+         {
+            return;
+         }
+         try
+         {
+            if(index == 0)
+            {
+               if(this.browser.isHistoryBackEnabled)
+               {
+                  this.browser.historyBack();
+               }
+               else
+               {
+                  this.report("没有可后退的页面");
+               }
+            }
+            else if(index == 1)
+            {
+               if(this.browser.isHistoryForwardEnabled)
+               {
+                  this.browser.historyForward();
+               }
+               else
+               {
+                  this.report("没有可前进的页面");
+               }
+            }
+            else if(index == 2)
+            {
+               this.browser.reload();
+               this.report("正在刷新当前页");
+            }
+            else
+            {
+               this.loadLogin();
+            }
+         }
+         catch(err:Error)
+         {
+            this.report("页面操作失败 " + err.message.substr(0,60));
          }
       }
       
@@ -530,6 +658,7 @@ package
       private function pageComplete(param1:Event) : void
       {
          var e:Event = param1;
+         var code:String = null;
          try
          {
             this.completedLocation = String(this.browser.location);
@@ -540,7 +669,23 @@ package
             completedLocation = "";
             trusted = false;
          }
+         this.loginFixLocation = "";
+         this.loginFixTicks = 0;
          this.record("登录网页 complete " + this.completedLocation.substr(0,80));
+         if(Boolean(this.iosTest) && !this.started && this.completedLocation.length > 0)
+         {
+            if(/^https:\/\/huoying\.qq\.com\/comm-htdocs\/login\/(qc_redirect|qccallback)\.html\?/.test(this.completedLocation) && Boolean(this.queryParam(this.completedLocation,"code")))
+            {
+               this.qcCodeArrived(this.completedLocation);
+               return;
+            }
+            if(Boolean(this.pendingQcCode) && /^https:\/\/huoying\.qq\.com\//.test(this.completedLocation))
+            {
+               code = this.pendingQcCode;
+               this.pendingQcCode = "";
+               this.browser.loadURL("javascript:" + this.qcExchangeScript(code));
+            }
+         }
          this.inspect();
       }
       
@@ -729,7 +874,7 @@ package
       private function webErrorAsScheme(param1:String) : Boolean
       {
          var text:String = param1;
-         var schemes:Array = ["huoyingair-session:","huoyingair-control:","wtloginmqq:","huoyingair-note:"];
+         var schemes:Array = ["huoyingair-session:","huoyingair-control:","wtloginmqq:","huoyingair-note:","huoyingair-qc:"];
          var i:int = 0;
          var at:int = 0;
          var url:String = null;
@@ -751,6 +896,10 @@ package
                else if(i == 2)
                {
                   this.report("iOS 不支持调起手机 QQ，请在登录框点「密码登录」");
+               }
+               else if(i == 4)
+               {
+                  this.qcHandoff(url);
                }
                else
                {
@@ -783,14 +932,87 @@ package
       
       private function pcLoginScript() : String
       {
-         // The site (qqconn.js) always logs in through QQ Connect: LoginManager opens a graph.qq.com/oauth2.0/authorize
-         // iframe, which for an iPhone UA becomes the mobile one-key page (needs the QQ app). Rewriting the frame to
-         // /oauth2.0/show?display=pc yields the PC authorize page with the account/password login embedded; the OAuth
-         // code still lands on qc_redirect.html, so the site sets openid/access_token exactly as on the Android build.
-         // The page itself is never clicked: a click on #dologin before LoginManager.init(QC) opens the plain ptlogin
-         // (appid 21000501) box, which logs the user in without QQ Connect tokens and the game page never captures a
-         // session. Status hints go back through the huoyingair-note: scheme (delivered as an error event on iOS).
-         return "(function(){if(window.__airPcLogin)return;window.__airPcLogin=1;" + "var graph='https://graph.qq.com',seen=0,noted={};" + "function note(t){if(noted[t])return;noted[t]=1;try{location.href='huoyingair-note:'+encodeURIComponent(t);}catch(e){}}" + "function scan(doc,acc){var list=doc.querySelectorAll('iframe');for(var i=0;i<list.length;i++){var f=list[i];acc.push(f);try{var d=f.contentDocument;if(d&&d.querySelectorAll)scan(d,acc);}catch(e){}}return acc;}" + "function fix(){var frames=scan(document,[]);" + "for(var i=0;i<frames.length;i++){var f=frames[i],u;" + "try{u=new URL(f.getAttribute('src')||'',location.href);}catch(e){continue;}" + "if(u.origin===graph){seen=1;" + "if(f.getAttribute('data-air-pc'))continue;f.setAttribute('data-air-pc','1');" + "if(u.pathname==='/oauth2.0/authorize'||(u.pathname==='/oauth2.0/show'&&u.searchParams.get('display')!=='pc')){" + "u.pathname='/oauth2.0/show';u.searchParams.set('which','Login');u.searchParams.set('display','pc');f.src=u.href;}" + "note('\\u767b\\u5f55\\u6846\\u5df2\\u6362\\u6210\\u7535\\u8111\\u7248\\uff1a\\u70b9\\u300c\\u5bc6\\u7801\\u767b\\u5f55\\u300d\\u8f93\\u5165 QQ \\u8d26\\u53f7\\u5bc6\\u7801\\uff0c\\u767b\\u5f55\\u540e\\u70b9\\u300c\\u6388\\u6743\\u300d');}" + "else if(u.hostname==='xui.ptlogin2.qq.com'&&u.searchParams.get('appid')==='21000501'){" + "note('\\u8fd9\\u4e2a\\u767b\\u5f55\\u6846\\u4e0d\\u80fd\\u8fdb\\u6e38\\u620f\\uff0c\\u8bf7\\u5173\\u95ed\\u5b83\\uff0c\\u7b49\\u9875\\u9762\\u81ea\\u52a8\\u5f39\\u51fa\\u6216\\u91cd\\u65b0\\u70b9\\u300c\\u767b\\u5f55\\u300d');}}}" + "setInterval(fix,300);" + "setTimeout(function(){var un=document.getElementById('unlogin');if(!seen&&un&&un.offsetParent!==null)note('\\u767b\\u5f55\\u6846\\u6ca1\\u6709\\u81ea\\u52a8\\u5f39\\u51fa\\u65f6\\uff0c\\u8bf7\\u70b9\\u9875\\u9762\\u53f3\\u4e0a\\u89d2\\u7684\\u300c\\u767b\\u5f55\\u300d');},15000);})()";
+         // The site (qqconn.js + milo biz/login) always logs in through QQ Connect: LoginManager.qcLogin opens a
+         // graph.qq.com/oauth2.0/authorize iframe. Inside WKWebView that frame lands on Tencent's mobile templates (the
+         // one-key page that needs the QQ app, or a password page that dies with "s_url参数丢失"), and redirects inside the
+         // iframe can be neither observed nor fixed from the parent page. The page script therefore only detects the login
+         // frame (or the plain ptlogin box opened before QC init, appid 21000501), blanks it and hands its URL to the
+         // launcher through huoyingair-qc:; the launcher loads the PC authorize page top-level and completes the OAuth
+         // code exchange itself (qcHandoff / qcCodeArrived / qcExchangeScript). Hints travel through huoyingair-note:.
+         return "(function(){if(window.__airPcLogin)return;window.__airPcLogin=1;" + "var graph='https://graph.qq.com',sent=0,noted={};" + "function note(t){if(noted[t])return;noted[t]=1;try{location.href='huoyingair-note:'+encodeURIComponent(t);}catch(e){}}" + "function scan(doc,acc){var list=doc.querySelectorAll('iframe');for(var i=0;i<list.length;i++){var f=list[i];acc.push(f);try{var d=f.contentDocument;if(d&&d.querySelectorAll)scan(d,acc);}catch(e){}}return acc;}" + "function fix(){if(sent||window.__airQcBusy)return;var frames=scan(document,[]);" + "for(var i=0;i<frames.length;i++){var f=frames[i],u;" + "try{u=new URL(f.getAttribute('src')||'',location.href);}catch(e){continue;}" + "if(u.origin===graph&&(u.pathname==='/oauth2.0/authorize'||u.pathname==='/oauth2.0/show')){sent=1;try{f.src='about:blank';}catch(e){}location.href='huoyingair-qc:'+encodeURIComponent(u.href);return;}" + "if(u.hostname==='xui.ptlogin2.qq.com'&&u.searchParams.get('appid')==='21000501'){sent=1;try{f.src='about:blank';}catch(e){}location.href='huoyingair-qc:plain';return;}}}" + "setInterval(fix,300);" + "setTimeout(function(){var un=document.getElementById('unlogin');if(!sent&&un&&un.offsetParent!==null)note('\\u767b\\u5f55\\u6846\\u6ca1\\u6709\\u81ea\\u52a8\\u5f39\\u51fa\\u65f6\\uff0c\\u8bf7\\u70b9\\u9875\\u9762\\u53f3\\u4e0a\\u89d2\\u7684\\u300c\\u767b\\u5f55\\u300d');},15000);})()";
+      }
+      
+      private function qcExchangeScript(param1:String) : String
+      {
+         // Mirrors milo LoginManager.qcLogin's qqConnectCallback: swap the OAuth code for openid/access_token at AMS, write
+         // the same four cookies milo writes, then let milo's checkLogin establish IED_LOG_INFO2_QC before reloading.
+         return "(function(code,appid,redirect){window.__airQcBusy=1;" + "function note(t){try{location.href='huoyingair-note:'+encodeURIComponent(t);}catch(e){}}" + "function cookie(n,v,e){try{milo.cookie.set(n,v,e,location.host,'/');}catch(x){document.cookie=n+'='+v+';path=/;domain='+location.host+';max-age='+e;}}" + "var done=0;function go(){if(done)return;done=1;location.reload();}" + "window.__airQcDone=function(r){if(!r||r.iRet!=0){window.__airQcBusy=0;note('\\u6362\\u7968\\u5931\\u8d25 '+(r&&r.sMsg?String(r.sMsg).substr(0,30):'')+'\\uff0c\\u8bf7\\u91cd\\u65b0\\u767b\\u5f55');return;}" + "var e=r.expires_in||86400;cookie('openid',r.openid,e);cookie('access_token',r.access_token,e);cookie('appid',appid,e);cookie('acctype','qc',e);" + "note('\\u767b\\u5f55\\u6210\\u529f\\uff0c\\u6b63\\u5728\\u6821\\u9a8c\\u767b\\u5f55\\u6001');" + "try{need('biz.login',function(LM){LM.checkLogin(function(){go();},function(){window.__airQcBusy=0;note('\\u767b\\u5f55\\u6001\\u6821\\u9a8c\\u672a\\u901a\\u8fc7\\uff0c\\u8bf7\\u91cd\\u65b0\\u767b\\u5f55');});});}catch(x){go();}" + "setTimeout(go,8000);};" + "var s=document.createElement('script');s.onerror=function(){window.__airQcBusy=0;note('\\u6362\\u7968\\u8bf7\\u6c42\\u5931\\u8d25\\uff0c\\u8bf7\\u68c0\\u67e5\\u7f51\\u7edc\\u540e\\u91cd\\u65b0\\u767b\\u5f55');};" + "s.src='https://ams.game.qq.com/ams/userLoginSvr?a=qcCodeToOpenId&qc_code='+encodeURIComponent(code)+'&appid='+encodeURIComponent(appid)+'&redirect_uri='+encodeURIComponent(redirect)+'&callback=__airQcDone&_='+Date.now();" + "document.head.appendChild(s);})(" + JSON.stringify(param1) + "," + JSON.stringify(this.qcAppId || "102045649") + "," + JSON.stringify(this.qcRedirect || "https://huoying.qq.com/comm-htdocs/login/qc_redirect.html") + ")";
+      }
+      
+      private function queryParam(param1:String, param2:String) : String
+      {
+         var found:Array = new RegExp("[?&]" + param2 + "=([^&#]*)").exec(param1);
+         if(!found)
+         {
+            return "";
+         }
+         try
+         {
+            return decodeURIComponent(String(found[1]));
+         }
+         catch(err:Error)
+         {
+         }
+         return "";
+      }
+      
+      private function qcHandoff(param1:String) : void
+      {
+         var auth:String = "";
+         var now:Number = new Date().time;
+         if(!this.browser || Boolean(this.started) || now - this.qcHandoffTime < 4000)
+         {
+            return;
+         }
+         this.qcHandoffTime = now;
+         try
+         {
+            auth = decodeURIComponent(param1.substr("huoyingair-qc:".length));
+         }
+         catch(err:Error)
+         {
+            auth = "";
+         }
+         var clientId:String = this.queryParam(auth,"client_id") || "102045649";
+         var redirect:String = this.queryParam(auth,"redirect_uri") || "https://huoying.qq.com/comm-htdocs/login/qc_redirect.html?parent_domain=https%3A%2F%2Fhuoying.qq.com";
+         var state:String = this.queryParam(auth,"state") || "STATE";
+         var scope:String = this.queryParam(auth,"scope") || "get_user_info";
+         this.qcAppId = clientId;
+         this.qcState = state;
+         this.qcRedirect = redirect.split("?")[0];
+         this.record("QQ 互联改走整页电脑版登录 " + auth.replace(/[?#].*$/,"").substr(0,60));
+         this.report("已打开电脑版 QQ 登录页：点「密码登录」输入账号密码，登录后点「授权」");
+         this.browser.loadURL("https://graph.qq.com/oauth2.0/show?which=Login&display=pc&response_type=code&client_id=" + encodeURIComponent(clientId) + "&redirect_uri=" + encodeURIComponent(redirect) + "&state=" + encodeURIComponent(state) + "&scope=" + encodeURIComponent(scope));
+      }
+      
+      private function qcCodeArrived(param1:String) : void
+      {
+         var code:String = this.queryParam(param1,"code");
+         var state:String = this.queryParam(param1,"state");
+         if(!code || !this.browser || Boolean(this.started))
+         {
+            return;
+         }
+         if(Boolean(this.qcState) && state != this.qcState)
+         {
+            this.report("登录来源校验失败，请重新登录");
+            this.browser.loadURL("https://huoying.qq.com/server/website/");
+            return;
+         }
+         this.pendingQcCode = code;
+         this.record("QQ 互联授权码已拦截");
+         this.report("授权成功，正在换取登录票据…");
+         this.browser.loadURL("https://huoying.qq.com/server/website/");
       }
       
       private function sessionCapture(param1:String, param2:Boolean) : String
@@ -831,6 +1053,22 @@ package
             param1.preventDefault();
             this.webNote(_loc2_);
             return;
+         }
+         if(_loc2_.indexOf("huoyingair-qc:") == 0)
+         {
+            param1.preventDefault();
+            this.qcHandoff(_loc2_);
+            return;
+         }
+         if(Boolean(this.iosTest) && /^https:\/\/huoying\.qq\.com\/comm-htdocs\/login\/(qc_redirect|qccallback)\.html\?/.test(_loc2_) && Boolean(this.queryParam(_loc2_,"code")))
+         {
+            param1.preventDefault();
+            this.qcCodeArrived(_loc2_);
+            return;
+         }
+         if(Boolean(this.iosTest) && !this.started && /^https?:/.test(_loc2_))
+         {
+            this.record("页面跳转 " + _loc2_.replace(/[?#].*$/,"").substr(0,100) + (this.queryParam(_loc2_,"style") ? " style=" + this.queryParam(_loc2_,"style") : "") + (this.queryParam(_loc2_,"appid") ? " appid=" + this.queryParam(_loc2_,"appid") : ""));
          }
          if(_loc2_.indexOf("huoyingair-session:") != 0)
          {
@@ -916,6 +1154,10 @@ package
             this.session.returns = {};
             this.started = true;
             this.browser.stage = null;
+            if(Boolean(this.navBar))
+            {
+               this.navBar.visible = false;
+            }
             bridge = getDefinitionByName("airgame.bridge.ExternalInterface");
             bridge.settings = d;
             bridge.notify = this.external;

@@ -98,6 +98,8 @@ jobs:
           xcrun simctl io "$UDID" screenshot sim/probe-25s.png
           sleep 30
           xcrun simctl io "$UDID" screenshot sim/probe-55s.png
+          sleep 25
+          xcrun simctl io "$UDID" screenshot sim/probe-80s.png
           CONT=$(xcrun simctl get_app_container "$UDID" local.huoying.probe data || true)
           echo "probe container: $CONT"
           find "$CONT" -name 'probe-results.txt' -print -exec cat {} \; -exec cp {} sim/ \; || true
@@ -110,6 +112,8 @@ jobs:
           xcrun simctl io "$UDID" screenshot sim/main-30s.png
           sleep 30
           xcrun simctl io "$UDID" screenshot sim/main-60s.png
+          sleep 30
+          xcrun simctl io "$UDID" screenshot sim/main-90s.png
           CONT2=$(xcrun simctl get_app_container "$UDID" local.huoying.airgame data || true)
           echo "main container: $CONT2"
           find "$CONT2" -name 'air-diagnostics-*.jsonl' -print -exec cat {} \; -exec cp {} sim/ \; || true

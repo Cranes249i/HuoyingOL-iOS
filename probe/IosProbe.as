@@ -131,38 +131,79 @@ package
       {
          var jsSent:Boolean = false;
          var reports:int = 0;
+         var phase:int = 1;
+         var handoffs:int = 0;
          web = new StageWebView(true);
          web.stage = stage;
          web.viewPort = new Rectangle(0, int(stage.stageHeight * 0.3), stage.stageWidth, int(stage.stageHeight * 0.7));
-         // Same frame-rewrite script as the launcher (MobileGame.pcLoginScript), kept in sync by hand.
+         // Same detection script as the launcher (MobileGame.pcLoginScript), kept in sync by hand: it never rewrites the
+         // login frame, it blanks it and hands the authorize URL to the host through huoyingair-qc:.
          var fixJs:String = "(function(){if(window.__airPcLogin)return;window.__airPcLogin=1;" +
-            "var graph='https://graph.qq.com',seen=0,noted={};" +
+            "var graph='https://graph.qq.com',sent=0,noted={};" +
             "function note(t){if(noted[t])return;noted[t]=1;try{location.href='huoyingair-note:'+encodeURIComponent(t);}catch(e){}}" +
             "function scan(doc,acc){var list=doc.querySelectorAll('iframe');for(var i=0;i<list.length;i++){var f=list[i];acc.push(f);try{var d=f.contentDocument;if(d&&d.querySelectorAll)scan(d,acc);}catch(e){}}return acc;}" +
-            "function fix(){var frames=scan(document,[]);" +
+            "function fix(){if(sent||window.__airQcBusy)return;var frames=scan(document,[]);" +
             "for(var i=0;i<frames.length;i++){var f=frames[i],u;" +
             "try{u=new URL(f.getAttribute('src')||'',location.href);}catch(e){continue;}" +
-            "if(u.origin===graph){seen=1;" +
-            "if(f.getAttribute('data-air-pc'))continue;f.setAttribute('data-air-pc','1');" +
-            "if(u.pathname==='/oauth2.0/authorize'||(u.pathname==='/oauth2.0/show'&&u.searchParams.get('display')!=='pc')){" +
-            "u.pathname='/oauth2.0/show';u.searchParams.set('which','Login');u.searchParams.set('display','pc');f.src=u.href;}" +
-            "note('graph frame rewritten to pc show');}" +
-            "else if(u.hostname==='xui.ptlogin2.qq.com'&&u.searchParams.get('appid')==='21000501'){note('plain ptlogin box (appid 21000501) detected');}}}" +
+            "if(u.origin===graph&&(u.pathname==='/oauth2.0/authorize'||u.pathname==='/oauth2.0/show')){sent=1;try{f.src='about:blank';}catch(e){}location.href='huoyingair-qc:'+encodeURIComponent(u.href);return;}" +
+            "if(u.hostname==='xui.ptlogin2.qq.com'&&u.searchParams.get('appid')==='21000501'){sent=1;try{f.src='about:blank';}catch(e){}location.href='huoyingair-qc:plain';return;}}}" +
             "setInterval(fix,300);" +
-            "setTimeout(function(){var un=document.getElementById('unlogin');if(!seen&&un&&un.offsetParent!==null)note('no graph frame after 15s, user must tap login');},15000);})()";
+            "setTimeout(function(){var un=document.getElementById('unlogin');if(!sent&&un&&un.offsetParent!==null)note('no graph frame after 15s, user must tap login');},15000);})()";
+         // Same code-exchange script as the launcher (MobileGame.qcExchangeScript) with an invalid code: AMS must answer
+         // through the JSONP callback with iRet != 0, which proves the exchange plumbing without a real account.
+         var exchangeJs:String = "(function(code,appid,redirect){window.__airQcBusy=1;" +
+            "function note(t){try{location.href='huoyingair-note:'+encodeURIComponent(t);}catch(e){}}" +
+            "function cookie(n,v,e){try{milo.cookie.set(n,v,e,location.host,'/');}catch(x){document.cookie=n+'='+v+';path=/;domain='+location.host+';max-age='+e;}}" +
+            "var done=0;function go(){if(done)return;done=1;note('exchange ok, would reload');}" +
+            "window.__airQcDone=function(r){if(!r||r.iRet!=0){window.__airQcBusy=0;note('T7 exchange callback iRet='+(r?r.iRet:'?')+' msg='+(r&&r.sMsg?String(r.sMsg).substr(0,40):''));return;}" +
+            "var e=r.expires_in||86400;cookie('openid',r.openid,e);cookie('access_token',r.access_token,e);cookie('appid',appid,e);cookie('acctype','qc',e);" +
+            "note('T7 exchange success (unexpected)');setTimeout(go,8000);};" +
+            "var s=document.createElement('script');s.onerror=function(){window.__airQcBusy=0;note('T7 exchange script load error');};" +
+            "s.src='https://ams.game.qq.com/ams/userLoginSvr?a=qcCodeToOpenId&qc_code='+encodeURIComponent(code)+'&appid='+encodeURIComponent(appid)+'&redirect_uri='+encodeURIComponent(redirect)+'&callback=__airQcDone&_='+Date.now();" +
+            "document.head.appendChild(s);})('probe-invalid-code','102045649','https://huoying.qq.com/comm-htdocs/login/qc_redirect.html')";
          // Reporter: enumerate iframes (src attribute, size, same-origin current href) and hand the JSON back via a custom scheme.
          var reportJs:String = "(function(){var out=[];function scan(doc,depth){var list=doc.querySelectorAll('iframe');for(var i=0;i<list.length;i++){var f=list[i],r=f.getBoundingClientRect(),cur='';" +
             "try{cur=f.contentWindow.location.href;}catch(e){cur='(x-origin)';}" +
-            "out.push({d:depth,src:String(f.getAttribute('src')||'').substr(0,160),cur:String(cur).substr(0,160),w:Math.round(r.width),h:Math.round(r.height),pc:f.getAttribute('data-air-pc')||''});" +
+            "out.push({d:depth,src:String(f.getAttribute('src')||'').substr(0,160),cur:String(cur).substr(0,160),w:Math.round(r.width),h:Math.round(r.height)});" +
             "try{var cd=f.contentDocument;if(cd)scan(cd,depth+1);}catch(e){}}}scan(document,0);" +
-            "var un=document.getElementById('unlogin');location.href='probe-scheme:'+encodeURIComponent(JSON.stringify({t:document.title,un:un?un.offsetParent!==null:null,f:out}));})()";
+            "var un=document.getElementById('unlogin'),cp=document.getElementById('combine_page');location.href='probe-scheme:'+encodeURIComponent(JSON.stringify({t:document.title,un:un?un.offsetParent!==null:null,cp:cp?cp.className:null,w:window.innerWidth,f:out}));})()";
+         var handoff:Function = function(raw:String):void
+         {
+            var auth:String = "";
+            if(++handoffs > 1)
+            {
+               say("T6 handoff ignored (already done)");
+               return;
+            }
+            try { auth = decodeURIComponent(raw.substr("huoyingair-qc:".length)); } catch(err:Error) { auth = ""; }
+            say("T6 handoff " + auth.substr(0, 220));
+            var pick:Function = function(name:String, dflt:String):String
+            {
+               var m:Array = new RegExp("[?&]" + name + "=([^&#]*)").exec(auth);
+               if(!m) return dflt;
+               try { return decodeURIComponent(String(m[1])); } catch(e2:Error) { return dflt; }
+            };
+            var url:String = "https://graph.qq.com/oauth2.0/show?which=Login&display=pc&response_type=code&client_id=" + encodeURIComponent(pick("client_id", "102045649")) +
+               "&redirect_uri=" + encodeURIComponent(pick("redirect_uri", "https://huoying.qq.com/comm-htdocs/login/qc_redirect.html?parent_domain=https%3A%2F%2Fhuoying.qq.com")) +
+               "&state=" + encodeURIComponent(pick("state", "STATE")) + "&scope=" + encodeURIComponent(pick("scope", "get_user_info"));
+            phase = 2;
+            say("T6 loading top-level pc login " + url.substr(0, 160));
+            web.loadURL(url);
+         };
          web.addEventListener(LocationChangeEvent.LOCATION_CHANGING, function(ev:LocationChangeEvent):void
          {
             var loc:String = ev.location;
-            if(loc.indexOf("probe-scheme:") == 0)
+            if(loc.indexOf("probe-scheme:") == 0 || loc.indexOf("huoyingair-note:") == 0)
             {
                ev.preventDefault();
                say("T3 custom scheme intercepted via LOCATION_CHANGING len=" + loc.length);
+               return;
+            }
+            if(loc.indexOf("huoyingair-qc:") == 0)
+            {
+               ev.preventDefault();
+               say("T6 qc handoff via LOCATION_CHANGING");
+               handoff(loc);
                return;
             }
             if(loc.indexOf("wtloginmqq:") == 0 || loc.indexOf("mqq") == 0)
@@ -179,23 +220,39 @@ package
          });
          web.addEventListener(Event.COMPLETE, function(ev:Event):void
          {
-            say("T4 web complete " + String(web.location).substr(0, 90) + (String(web.location).indexOf("huoying.qq.com") >= 0 ? " => PASS" : ""));
+            var loc:String = String(web.location);
+            say("T4 web complete " + loc.substr(0, 90) + (loc.indexOf("huoying.qq.com") >= 0 ? " => PASS" : ""));
+            if(phase == 2)
+            {
+               say("T6 graph page complete" + (loc.indexOf("graph.qq.com/oauth2.0/show") >= 0 ? " => PASS" : " (unexpected location)"));
+               setTimeout(function():void { say("T6 report on graph page"); web.loadURL("javascript:" + reportJs); }, 4000);
+               setTimeout(function():void { say("T6 report on graph page #2"); web.loadURL("javascript:" + reportJs); }, 12000);
+               return;
+            }
             if(jsSent) return;
             jsSent = true;
             setTimeout(function():void { say("T5 report before fix"); web.loadURL("javascript:" + reportJs); }, 1500);
-            setTimeout(function():void { say("T5 applying frame fix"); web.loadURL("javascript:" + fixJs); }, 3000);
+            setTimeout(function():void { say("T7 exchange plumbing test (invalid code)"); web.loadURL("javascript:" + exchangeJs); }, 3000);
+            setTimeout(function():void { say("T5 applying detection script"); web.loadURL("javascript:" + fixJs); }, 9000);
             var later:Function = function():void
             {
-               if(++reports > 6) return;
+               if(++reports > 4 || phase != 1) return;
                say("T5 report #" + reports + " location=" + String(web.location).substr(0, 60));
                web.loadURL("javascript:" + reportJs);
                setTimeout(later, 6000);
             };
-            setTimeout(later, 6000);
+            setTimeout(later, 12000);
          });
          web.addEventListener(ErrorEvent.ERROR, function(ev:ErrorEvent):void
          {
             var text:String = String(ev.text);
+            var qcAt:int = text.indexOf("huoyingair-qc:");
+            if(qcAt >= 0)
+            {
+               say("T6 qc handoff via ERROR event");
+               handoff(text.substr(qcAt).replace(/[\s\r\n]+$/, ""));
+               return;
+            }
             var noteAt:int = text.indexOf("huoyingair-note:");
             if(noteAt >= 0)
             {
