@@ -70,13 +70,10 @@ jobs:
           echo "simulator sdk: $SIM_SDK"
           mkdir -p build
           java -jar airsdk/lib/adt.jar -version
+          # ADT refuses its internal code-signing for simulator targets; signing is optional there.
           java -jar airsdk/lib/adt.jar -package -target ipa-test-interpreter-simulator \
-            -storetype pkcs12 -keystore cert/ios-dev.p12 -storepass "$P12_PASSWORD" \
-            -provisioning-profile cert/HuoyingOL.mobileprovision \
             build/IosProbe-sim.ipa probe/IosProbe-app.xml -platformsdk "$SIM_SDK" -C probe IosProbe.swf Probe2.swf
           java -jar airsdk/lib/adt.jar -package -target ipa-test-interpreter-simulator \
-            -storetype pkcs12 -keystore cert/ios-dev.p12 -storepass "$P12_PASSWORD" \
-            -provisioning-profile cert/HuoyingOL.mobileprovision \
             build/HuoyingOL-sim.ipa HuoyingOL-ios.xml -platformsdk "$SIM_SDK" MobileGame.swf qq-return.js icons
           ls -l build
 

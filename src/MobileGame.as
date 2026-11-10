@@ -877,7 +877,7 @@ package
                try
                {
                   entryBytes = Object(getDefinitionByName("airgame.bridge.RuntimeAdapter")).apply(downloading.data as ByteArray,true);
-                  loader.loadBytes(entryBytes,context);
+                  loader.loadBytes(entryBytes,context as flash.system.LoaderContext);
                }
                catch(adaptError:Error)
                {
